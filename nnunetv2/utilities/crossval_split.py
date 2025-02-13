@@ -13,4 +13,14 @@ def generate_crossval_split(train_identifiers: List[str], seed=12345, n_splits=5
         splits.append({})
         splits[-1]['train'] = list(train_keys)
         splits[-1]['val'] = list(test_keys)
+    # import pdb;pdb.set_trace()
+    ## splits
+    # [
+    #     {'train': ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'], 'val': ['A', 'J']},
+    #     {'train': ['A', 'C', 'D', 'E', 'F', 'H', 'I', 'J'], 'val': ['B', 'G']},
+    #     {'train': ['A', 'B', 'D', 'E', 'G', 'H', 'I', 'J'], 'val': ['C', 'F']},
+    #     {'train': ['A', 'B', 'C', 'E', 'F', 'G', 'I', 'J'], 'val': ['D', 'H']},
+    #     {'train': ['A', 'B', 'C', 'D', 'F', 'G', 'H', 'J'], 'val': ['E', 'I']}
+    # ]
+
     return splits

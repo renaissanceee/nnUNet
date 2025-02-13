@@ -147,6 +147,8 @@ class LabelManager(object):
 
         predicted_probabilities has to have shape (c, x, y(, z)) where c is the number of classes/regions
         """
+        print("probabilities -> segmentation  (not logits)")
+        # self.regions_class_order # [1,2,3]
         if not isinstance(predicted_probabilities, (np.ndarray, torch.Tensor)):
             raise RuntimeError(f"Unexpected input type. Expected np.ndarray or torch.Tensor,"
                                f" got {type(predicted_probabilities)}")
@@ -159,20 +161,21 @@ class LabelManager(object):
             f'unexpected number of channels in predicted_probabilities. Expected {self.num_segmentation_heads}, ' \
             f'got {predicted_probabilities.shape[0]}. Remember that predicted_probabilities should have shape ' \
             f'(c, x, y(, z)).'
-
+        # print(predicted_probabilities.shape)# [3, 146, 171, 136]
         if self.has_regions:
+            print(f"hard-threshold 0.5 for regions_class_order {self.regions_class_order}")
             if isinstance(predicted_probabilities, np.ndarray):
                 segmentation = np.zeros(predicted_probabilities.shape[1:], dtype=np.uint16)
-            else:
-                # no uint16 in torch
-                segmentation = torch.zeros(predicted_probabilities.shape[1:], dtype=torch.int16,
+            else: # yes, tensor here
+                segmentation = torch.zeros(predicted_probabilities.shape[1:], dtype=torch.int16, # no uint16 in torch
                                            device=predicted_probabilities.device)
-            for i, c in enumerate(self.regions_class_order):
-                segmentation[predicted_probabilities[i] > 0.5] = c
+            for i, c in enumerate(self.regions_class_order): # overwritten happens here!
+                segmentation[predicted_probabilities[i] > 0.5] = c # [146,171,136]>0.5 -> marked as c=1,2,3 // others 0
         else:
+            print("argmax")
             segmentation = predicted_probabilities.argmax(0)
-
-        return segmentation
+        # print(torch.max(segmentation)) # 3
+        return segmentation # [146, 171, 136]
 
     def convert_logits_to_segmentation(self, predicted_logits: Union[np.ndarray, torch.Tensor]) -> \
             Union[np.ndarray, torch.Tensor]:

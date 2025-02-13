@@ -167,6 +167,9 @@ class nnUNetPredictor(object):
                                        part_id: int = 0,
                                        num_parts: int = 1,
                                        save_probabilities: bool = False):
+        # import pdb;pdb.set_trace()
+        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0"
+        list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
@@ -376,7 +379,7 @@ class nnUNetPredictor(object):
                     sleep(0.1)
                     proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
 
-                prediction = self.predict_logits_from_preprocessed_data(data).cpu()
+                prediction = self.predict_logits_from_preprocessed_data(data).cpu() # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
 
                 if ofile is not None:
                     # this needs to go into background processes
@@ -480,9 +483,7 @@ class nnUNetPredictor(object):
         n_threads = torch.get_num_threads()
         torch.set_num_threads(default_num_processes if default_num_processes < n_threads else n_threads)
         prediction = None
-
-        for params in self.list_of_parameters:
-
+        for params in self.list_of_parameters: # 5 tqdm: step-by-step load model params, avoid OOM
             # messing with state dict names...
             if not isinstance(self.network, OptimizedModule):
                 self.network.load_state_dict(params)
@@ -586,9 +587,7 @@ class nnUNetPredictor(object):
                                             device=results_device)
             else:
                 gaussian = 1
-
-            if not self.allow_tqdm and self.verbose:
-                print(f'running prediction: {len(slicers)} steps')
+            print(f'running prediction: {len(slicers)} steps') # z=146
             for sl in tqdm(slicers, disable=not self.allow_tqdm):
                 workon = data[sl][None]
                 workon = workon.to(self.device)
@@ -906,7 +905,8 @@ def predict_entry_point():
     parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
                         help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
                              'jobs)')
-
+    parser.add_argument('--suffix', type=str, required=False, default='',
+                        help='suffix to indicate training settings')
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -916,8 +916,8 @@ def predict_entry_point():
 
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
-
-    model_folder = get_output_folder(args.d, args.tr, args.p, args.c)
+    # model_folder = get_output_folder(args.d, args.tr, args.p, args.c) # JJ: why not use args.i here
+    model_folder = get_output_folder(args.d, args.tr, args.p, args.c, suffix=args.suffix)
 
     if not isdir(args.o):
         maybe_mkdir_p(args.o)

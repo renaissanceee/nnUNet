@@ -79,7 +79,7 @@ class MemoryEfficientSoftDiceLoss(nn.Module):
         with torch.no_grad():
             if x.ndim != y.ndim:
                 y = y.view((y.shape[0], 1, *y.shape[1:]))
-
+            # import pdb;pdb.set_trace()
             if x.shape == y.shape:
                 # if this is the case then gt is probably already a one hot encoding
                 y_onehot = y

@@ -48,7 +48,7 @@ from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
-from nnunetv2.paths import nnUNet_preprocessed, nnUNet_results
+from nnunetv2.paths import nnUNet_raw, nnUNet_preprocessed, nnUNet_results
 from nnunetv2.training.data_augmentation.compute_initial_patch_size import get_patch_size
 from nnunetv2.training.dataloading.data_loader_2d import nnUNetDataLoader2D
 from nnunetv2.training.dataloading.data_loader_3d import nnUNetDataLoader3D
@@ -125,13 +125,17 @@ class nnUNetTrainer(object):
         # inference and some of the folders may not be defined!
         self.preprocessed_dataset_folder_base = join(nnUNet_preprocessed, self.plans_manager.dataset_name) \
             if nnUNet_preprocessed is not None else None
+        # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_preprocessed/Dataset137_BraTS2021'
         self.output_folder_base = join(nnUNet_results, self.plans_manager.dataset_name,
                                        self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration) \
             if nnUNet_results is not None else None
+        # '/staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d'
         self.output_folder = join(self.output_folder_base, f'fold_{fold}')
-
+        # '/staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d/fold_0'
         self.preprocessed_dataset_folder = join(self.preprocessed_dataset_folder_base,
                                                 self.configuration_manager.data_identifier)
+        # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_preprocessed/Dataset137_BraTS2021/nnUNetPlans_2d'
+        self.raw_dataset_folder_base = join(nnUNet_raw, self.plans_manager.dataset_name) # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021'
         # unlike the previous nnunet folder_with_segs_from_previous_stage is now part of the plans. For now it has to
         # be a different configuration in the same plans
         # IMPORTANT! the mapping must be bijective, so lowres must point to fullres and vice versa (using
@@ -149,7 +153,8 @@ class nnUNetTrainer(object):
         self.oversample_foreground_percent = 0.33
         self.num_iterations_per_epoch = 250
         self.num_val_iterations_per_epoch = 50
-        self.num_epochs = 1000
+        # self.num_epochs = 50 #100 #1000
+        self.num_epochs = 100
         self.current_epoch = 0
         self.enable_deep_supervision = True
 
@@ -578,6 +583,8 @@ class nnUNetTrainer(object):
                 self.print_to_log_file("Using splits from existing split file:", splits_file)
                 splits = load_json(splits_file)
                 self.print_to_log_file(f"The split file contains {len(splits)} splits.")
+                # len(splits[0]['train'])=1000 len(splits[0]['val'])=251
+                # import pdb;pdb.set_trace()
 
             self.print_to_log_file("Desired fold for training: %d" % self.fold)
             if self.fold < len(splits):
@@ -606,6 +613,28 @@ class nnUNetTrainer(object):
     def get_tr_and_val_datasets(self):
         # create dataset split
         tr_keys, val_keys = self.do_split()
+        ###########################
+        # JJ: save val/.nii.gz as Ts
+        # JJ: notice: self.fold
+        set_val_folder_img = join(self.raw_dataset_folder_base, "imagesTr")
+        set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_"+str(self.fold))
+        set_val_folder_label = join(self.raw_dataset_folder_base, "labelsTr")
+        set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_"+str(self.fold))
+        os.makedirs(set_test_folder_img, exist_ok=True)
+        os.makedirs(set_test_folder_label, exist_ok=True)
+        for c in val_keys: # c is BraTS2021_00000, but we need ->BraTS2021_00000_0000.nii.gz/ ..._0001.nii.gz / ..._0002.nii.gz/ ..._0003.nii.gz
+            shutil.copy(join(set_val_folder_img, c + "_0000.nii.gz"), join(set_test_folder_img, c + '_0000.nii.gz'))
+            shutil.copy(join(set_val_folder_img, c + "_0001.nii.gz"), join(set_test_folder_img, c + '_0001.nii.gz'))
+            shutil.copy(join(set_val_folder_img, c + "_0002.nii.gz"), join(set_test_folder_img, c + '_0002.nii.gz'))
+            shutil.copy(join(set_val_folder_img, c + "_0003.nii.gz"), join(set_test_folder_img, c + '_0003.nii.gz'))
+            # /nnUNet_raw/Dataset137_BraTS2021/imagesTs/BraTS2021_00000_0000.nii.gz
+            shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
+            shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
+            shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
+            shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
+            # /nnUNet_raw/Dataset137_BraTS2021/labelsTs/BraTS2021_00000.nii.gz
+        # import pdb;pdb.set_trace()
+        ###########################
 
         # load the datasets for training and validation. Note that we always draw random samples so we really don't
         # care about distributing training cases across GPUs.

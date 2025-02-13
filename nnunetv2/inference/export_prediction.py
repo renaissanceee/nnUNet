@@ -86,6 +86,7 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
     label_manager = plans_manager.get_label_manager(dataset_json_dict_or_file)
+    # import pdb;pdb.set_trace()
     ret = convert_predicted_logits_to_segmentation_with_correct_shape(
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
         return_probabilities=save_probabilities

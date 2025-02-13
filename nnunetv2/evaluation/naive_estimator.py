@@ -39,11 +39,11 @@ def save_summary_json(results: dict, output_file: str):
     results_converted = deepcopy(results)
     # convert keys in mean metrics
     results_converted['mean'] = {label_or_region_to_key(k): results['mean'][k] for k in results['mean'].keys()}
-    # convert metric_per_case
-    for i in range(len(results_converted["metric_per_case"])):
-        results_converted["metric_per_case"][i]['metrics'] = \
-            {label_or_region_to_key(k): results["metric_per_case"][i]['metrics'][k]
-             for k in results["metric_per_case"][i]['metrics'].keys()}
+    # convert estimator_per_case
+    for i in range(len(results_converted["estimator_per_case"])):
+        results_converted["estimator_per_case"][i]['estimator'] = \
+            {label_or_region_to_key(k): results["estimator_per_case"][i]['estimator'][k]
+             for k in results["estimator_per_case"][i]['estimator'].keys()}
     # sort_keys=True will make foreground_mean the first entry and thus easy to spot
     save_json(results_converted, output_file, sort_keys=True)
 
@@ -52,11 +52,11 @@ def load_summary_json(filename: str):
     results = load_json(filename)
     # convert keys in mean metrics
     results['mean'] = {key_to_label_or_region(k): results['mean'][k] for k in results['mean'].keys()}
-    # convert metric_per_case
-    for i in range(len(results["metric_per_case"])):
-        results["metric_per_case"][i]['metrics'] = \
-            {key_to_label_or_region(k): results["metric_per_case"][i]['metrics'][k]
-             for k in results["metric_per_case"][i]['metrics'].keys()}
+    # convert estimator_per_case
+    for i in range(len(results["estimator_per_case"])):
+        results["estimator_per_case"][i]['metrics'] = \
+            {key_to_label_or_region(k): results["estimator_per_case"][i]['metrics'][k]
+             for k in results["estimator_per_case"][i]['metrics'].keys()}
     return results
 
 
@@ -68,13 +68,23 @@ def region_or_label_to_mask(segmentation: np.ndarray, region_or_label: Union[int
     if np.isscalar(region_or_label):
         return segmentation == region_or_label
     else:
-        print(region_or_label)
         mask = np.zeros_like(segmentation, dtype=bool)
-        for r in region_or_label:
+        for r in region_or_label:# 1,2,3
             mask[segmentation == r] = True
-            print(f'r={r}, True={np.count_nonzero(mask)}')
-    print(f'done, True={np.count_nonzero(mask)}')
-    return mask
+    # print(f'Numerator. {region_or_label} is: {np.count_nonzero(mask)}')
+    return mask, np.count_nonzero(mask)
+
+def region_or_label_to_mask_prob(segmentation: np.ndarray, mask_ref: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
+    if np.isscalar(region_or_label):
+        return segmentation == region_or_label
+    else:
+        mask = np.zeros_like(mask_ref)
+        for r in region_or_label:# 1,2,3
+            cur_seg_channel_map = segmentation[r-1,:,:,:][None,...]
+            mask = np.maximum(mask, cur_seg_channel_map) # take max confidence over 3-channels
+    mask[~mask_ref] = 0 # only consider tp pixels
+    # print(f'Denominator. Production is {np.sum(mask)}')
+    return mask, np.sum(mask)
 
 
 def compute_tp_fp_fn_tn(mask_ref: np.ndarray, mask_pred: np.ndarray, ignore_mask: np.ndarray = None):
@@ -82,13 +92,11 @@ def compute_tp_fp_fn_tn(mask_ref: np.ndarray, mask_pred: np.ndarray, ignore_mask
         use_mask = np.ones_like(mask_ref, dtype=bool)
     else:
         use_mask = ~ignore_mask
-    print(ignore_mask)
     tp = np.sum((mask_ref & mask_pred) & use_mask)
     fp = np.sum(((~mask_ref) & mask_pred) & use_mask)
     fn = np.sum((mask_ref & (~mask_pred)) & use_mask)
     tn = np.sum(((~mask_ref) & (~mask_pred)) & use_mask)
     return tp, fp, fn, tn
-
 
 def compute_metrics(reference_file: str, prediction_file: str, image_reader_writer: BaseReaderWriter,
                     labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
@@ -106,14 +114,14 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
     # print(np.count_nonzero(seg_ref == 0.0))
     # print(np.count_nonzero(seg_ref == 1.0))
     # print(np.count_nonzero(seg_ref == 2.0))
-    # print(np.count_nonzero(seg_ref == 3.0)) --> sum up to be 240*240*155
+    # print(np.count_nonzero(seg_ref == 3.0))
+    ## sum up to be 240*240*155
 
     for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
-        # import pdb;pdb.set_trace()
         results['metrics'][r] = {}
         mask_ref = region_or_label_to_mask(seg_ref, r)
         mask_pred = region_or_label_to_mask(seg_pred, r)
-        tp, fp, fn, tn = compute_tp_fp_fn_tn(mask_ref, mask_pred, ignore_mask)# np_array(1,155,240,240), None
+        tp, fp, fn, tn = compute_tp_fp_fn_tn(mask_ref, mask_pred, ignore_mask)# np_array(1,155,240,240)
         if tp + fp + fn == 0:
             results['metrics'][r]['Dice'] = np.nan
             results['metrics'][r]['IoU'] = np.nan
@@ -128,6 +136,45 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
         results['metrics'][r]['n_ref'] = fn + tp
     return results
 
+
+def compute_estimator(reference_file: str, prediction_file: str, probability_file: str, image_reader_writer: BaseReaderWriter,
+                    labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
+                    ignore_label: int = None) -> dict:
+    # load images
+    seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file) #(1,155,240,240)
+    seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
+    prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240)
+    ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
+
+    results = {}
+    results['reference_file'] = reference_file
+    results['prediction_file'] = prediction_file
+    results['probability_file'] = probability_file
+    results['estimator'] = {}
+    wt_counter = 0
+    for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
+        results['estimator'][r] = {}
+        ## naive_tp_struc_ratio
+        # numerator：选出符合123的大区域
+        gt_map, gt_counter = region_or_label_to_mask(seg_ref, r)#(1,155,240,240)->(1,155,240,240)
+        # denominator：用三张prob-map中的最大置信度 (or mean?)
+        production_map, production_counter = region_or_label_to_mask_prob(prob_pred, gt_map, r) #(3,155,240,240) -> (1,155,240,240)
+        tp_ratio = production_counter/gt_counter if gt_counter!=0 else 0
+        results['estimator'][r]['naive_tp_struc_ratio'] = tp_ratio
+
+        ## naive_local_global_ratio:
+        seg_map, seg_counter = region_or_label_to_mask(seg_pred, r)
+        if r == (1, 2, 3):
+            wt_counter = seg_counter
+            naive_wt_wt_ratio = seg_counter / wt_counter
+            results['estimator']['naive_wt_wt_ratio'] = naive_wt_wt_ratio
+        if r == (2, 3):
+            naive_tc_wt_ratio = seg_counter/wt_counter  # (2,3)/(1,2,3)  (3)/(1,2,3)
+            results['estimator']['naive_tc_wt_ratio'] = naive_tc_wt_ratio
+        if r == (3,):
+            naive_et_wt_ratio = seg_counter/wt_counter  # (3)/(1,2,3)
+            results['estimator']['naive_et_wt_ratio'] = naive_et_wt_ratio
+    return results
 
 def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: str,
                               image_reader_writer: BaseReaderWriter,
@@ -163,12 +210,12 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
         results.append(result)
 
     # mean metric per class
-    metric_list = list(results[0]['metrics'][regions_or_labels[0]].keys())
+    metric_list = list(results[0]['estimator'][regions_or_labels[0]].keys())
     means = {}
     for r in regions_or_labels:
         means[r] = {}
         for m in metric_list:
-            means[r][m] = np.nanmean([i['metrics'][r][m] for i in results])
+            means[r][m] = np.nanmean([i['estimator'][r][m] for i in results])
 
     # foreground mean
     foreground_mean = {}
@@ -183,11 +230,71 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
     [recursive_fix_for_json_export(i) for i in results]
     recursive_fix_for_json_export(means)
     recursive_fix_for_json_export(foreground_mean)
-    result = {'metric_per_case': results, 'mean': means, 'foreground_mean': foreground_mean}
+    result = {'estimator_per_case': results, 'mean': means, 'foreground_mean': foreground_mean}
     if output_file is not None:
         save_summary_json(result, output_file)
     return result
-    # print('DONE')
+def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: str,
+                              image_reader_writer: BaseReaderWriter,
+                              file_ending: str,
+                              regions_or_labels: Union[List[int], List[Union[int, Tuple[int, ...]]]],
+                              ignore_label: int = None,
+                              num_processes: int = default_num_processes,
+                              chill: bool = True) -> dict:
+    """
+    output_file must end with .json; can be None
+    """
+    if output_file is not None:
+        assert output_file.endswith('.json'), 'output_file should end with .json'
+    files_pred = subfiles(folder_pred, suffix=file_ending, join=False)
+    files_prob = subfiles(folder_pred, suffix=".npz", join=False)  # npz for probs
+    files_ref = subfiles(folder_ref, suffix=file_ending, join=False)
+    if not chill:
+        present = [isfile(join(folder_pred, i)) for i in files_ref]
+        assert all(present), "Not all files in folder_ref exist in folder_pred"
+    files_ref = [join(folder_ref, i) for i in files_pred]
+    files_pred = [join(folder_pred, i) for i in files_pred]
+    files_prob = [join(folder_pred, i.replace("nii.gz","npz")) for i in files_pred]
+    # with multiprocessing.get_context("spawn").Pool(num_processes) as pool:
+    #     # for i in list(zip(files_ref, files_pred, [image_reader_writer] * len(files_pred), [regions_or_labels] * len(files_pred), [ignore_label] * len(files_pred))):
+    #     #     compute_metrics(*i)
+    #     results = pool.starmap(
+    #         compute_metrics,
+    #         list(zip(files_ref, files_pred, [image_reader_writer] * len(files_pred), [regions_or_labels] * len(files_pred),
+    #                  [ignore_label] * len(files_pred)))
+    #     )
+
+    results = []
+    for ref, pred, prob in zip(files_ref, files_pred, files_prob):
+        # result = compute_metrics(ref, pred, image_reader_writer, regions_or_labels, ignore_label)
+        result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label)
+        results.append(result)
+
+    # mean metric per class
+    metric_list = list(results[0]['estimator'][regions_or_labels[0]].keys())
+    means = {}
+    for r in regions_or_labels:
+        means[r] = {}
+        for m in metric_list:
+            means[r][m] = np.nanmean([i['estimator'][r][m] for i in results])
+
+    # foreground mean
+    foreground_mean = {}
+    for m in metric_list:
+        values = []
+        for k in means.keys():
+            if k == 0 or k == '0':
+                continue
+            values.append(means[k][m])
+        foreground_mean[m] = np.mean(values)
+
+    [recursive_fix_for_json_export(i) for i in results]
+    recursive_fix_for_json_export(means)
+    recursive_fix_for_json_export(foreground_mean)
+    result = {'estimator_per_case': results, 'mean': means, 'foreground_mean': foreground_mean}
+    if output_file is not None:
+        save_summary_json(result, output_file)
+    return result
 
 
 def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_file: str, plans_file: str,
@@ -195,8 +302,8 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                num_processes: int = default_num_processes,
                                chill: bool = False):
     dataset_json = load_json(dataset_json_file)
-    # get file ending
-    file_ending = dataset_json['file_ending']
+    file_ending = dataset_json['file_ending'] #.nii.gz for segs
+    # file_ending = ".npz" #.npz for probs
 
     # get reader writer class
     example_file = subfiles(folder_ref, suffix=file_ending, join=True)[0]
@@ -207,7 +314,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
         output_file = join(folder_pred, 'summary.json')
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
-    compute_metrics_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
+    compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
                               lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
                               num_processes, chill=chill)
 

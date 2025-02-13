@@ -44,8 +44,10 @@ def create_lists_from_splitted_dataset_folder(folder: str, file_ending: str, ide
     """
     does not rely on dataset.json
     """
+
     if identifiers is None:
         identifiers = get_identifiers_from_splitted_dataset_folder(folder, file_ending)
+    # import pdb;pdb.set_trace()
     files = subfiles(folder, suffix=file_ending, join=False, sort=True)
     list_of_lists = []
 
@@ -59,12 +61,13 @@ def create_lists_from_splitted_dataset_folder(folder: str, file_ending: str, ide
 def get_filenames_of_train_images_and_targets(raw_dataset_folder: str, dataset_json: dict = None):
     if dataset_json is None:
         dataset_json = load_json(join(raw_dataset_folder, 'dataset.json'))
-
     if 'dataset' in dataset_json.keys():
         dataset = dataset_json['dataset']
         for k in dataset.keys():
+            import pdb;pdb.set_trace()
             dataset[k]['label'] = os.path.abspath(join(raw_dataset_folder, dataset[k]['label'])) if not os.path.isabs(dataset[k]['label']) else dataset[k]['label']
             dataset[k]['images'] = [os.path.abspath(join(raw_dataset_folder, i)) if not os.path.isabs(i) else i for i in dataset[k]['images']]
+            print(dataset[k]['label'])
     else:
         identifiers = get_identifiers_from_splitted_dataset_folder(join(raw_dataset_folder, 'imagesTr'), dataset_json['file_ending'])
         images = create_lists_from_splitted_dataset_folder(join(raw_dataset_folder, 'imagesTr'), dataset_json['file_ending'], identifiers)
