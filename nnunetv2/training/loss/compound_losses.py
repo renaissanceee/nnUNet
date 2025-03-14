@@ -94,13 +94,13 @@ class DC_and_BCE_loss(nn.Module):
         else:
             target_regions = target
             mask = None
-
-        dc_loss = self.dc(net_output, target_regions, loss_mask=mask)
+        dc_loss = self.dc(net_output, target_regions, loss_mask=mask)# [105,3,192,160]
         target_regions = target_regions.float()
         if mask is not None:
             ce_loss = (self.ce(net_output, target_regions) * mask).sum() / torch.clip(mask.sum(), min=1e-8)
         else:
             ce_loss = self.ce(net_output, target_regions)
+        print(dc_loss, ce_loss)# JJ
         result = self.weight_ce * ce_loss + self.weight_dice * dc_loss
         return result
 

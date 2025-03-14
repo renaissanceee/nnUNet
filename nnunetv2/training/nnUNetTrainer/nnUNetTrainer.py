@@ -212,7 +212,7 @@ class nnUNetTrainer(object):
             self.num_input_channels = determine_num_input_channels(self.plans_manager, self.configuration_manager,
                                                                    self.dataset_json)
 
-            self.network = self.build_network_architecture(
+            self.network = self.build_network_architecture(# PlainConvUNet
                 self.configuration_manager.network_arch_class_name,
                 self.configuration_manager.network_arch_init_kwargs,
                 self.configuration_manager.network_arch_init_kwargs_req_import,
@@ -393,16 +393,17 @@ class nnUNetTrainer(object):
 
     def _build_loss(self):
         if self.label_manager.has_regions:
+            print("DC_and_BCE_loss")
             loss = DC_and_BCE_loss({},
                                    {'batch_dice': self.configuration_manager.batch_dice,
                                     'do_bg': True, 'smooth': 1e-5, 'ddp': self.is_ddp},
                                    use_ignore_label=self.label_manager.ignore_label is not None,
                                    dice_class=MemoryEfficientSoftDiceLoss)
         else:
+            print("DC_and_CE_loss")
             loss = DC_and_CE_loss({'batch_dice': self.configuration_manager.batch_dice,
                                    'smooth': 1e-5, 'do_bg': False, 'ddp': self.is_ddp}, {}, weight_ce=1, weight_dice=1,
                                   ignore_label=self.label_manager.ignore_label, dice_class=MemoryEfficientSoftDiceLoss)
-
         if self._do_i_compile():
             loss.dc = torch.compile(loss.dc)
 
@@ -1021,8 +1022,9 @@ class nnUNetTrainer(object):
         # So autocast will only be active if we have a cuda device.
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             output = self.network(data)
+            # print(output)# len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
             # del data
-            l = self.loss(output, target)
+            l = self.loss(output, target)# target only includes True/False
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()

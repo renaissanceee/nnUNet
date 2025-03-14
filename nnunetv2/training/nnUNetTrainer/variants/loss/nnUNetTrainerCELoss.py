@@ -7,6 +7,7 @@ import numpy as np
 
 class nnUNetTrainerCELoss(nnUNetTrainer):
     def _build_loss(self):
+        print("Here you use CELoss...")
         assert not self.label_manager.has_regions, "regions not supported by this trainer"
         loss = RobustCrossEntropyLoss(
             weight=None, ignore_index=self.label_manager.ignore_label if self.label_manager.has_ignore_label else -100

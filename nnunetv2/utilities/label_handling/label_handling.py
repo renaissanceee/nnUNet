@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class LabelManager(object):
-    def __init__(self, label_dict: dict, regions_class_order: Union[List[int], None], force_use_labels: bool = False,
+    def __init__(self, label_dict: dict, regions_class_order: Union[List[int], None], force_use_labels: bool = True, # False,
                  inference_nonlin=None):
         self._sanity_check(label_dict)
         self.label_dict = label_dict
