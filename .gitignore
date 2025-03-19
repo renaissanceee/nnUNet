@@ -23,6 +23,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+*.json
 # Output
 nnUNet_results/
 nnUNet_results_inference/

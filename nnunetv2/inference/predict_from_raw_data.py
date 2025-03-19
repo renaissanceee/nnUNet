@@ -917,7 +917,8 @@ def predict_entry_point():
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
     # model_folder = get_output_folder(args.d, args.tr, args.p, args.c) # JJ: why not use args.i here
-    model_folder = get_output_folder(args.d, args.tr, args.p, args.c, suffix=args.suffix)
+    # model_folder = get_output_folder(args.d, args.tr, args.p, args.c, suffix=args.suffix)
+    model_folder = args.i.replace(args.suffix,"")
 
     if not isdir(args.o):
         maybe_mkdir_p(args.o)

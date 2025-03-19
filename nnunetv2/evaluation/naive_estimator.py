@@ -3,7 +3,7 @@ import os
 from copy import deepcopy
 from multiprocessing import Pool
 from typing import Tuple, List, Union, Optional
-
+import matplotlib.pyplot as plt
 import numpy as np
 from batchgenerators.utilities.file_and_folder_operations import subfiles, join, save_json, load_json, \
     isfile
@@ -15,7 +15,7 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 # the Evaluator class of the previous nnU-Net was great and all but man was it overengineered. Keep it simple
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
-
+import torch
 #  from: https://github.com/AxelJanRousseau/PostTrainCalibration/
 def fast_ece(y_true, y_pred, n_bins=10):
     # ~sklearn code
@@ -138,44 +138,20 @@ def compute_tp_fp_fn_tn(mask_ref: np.ndarray, mask_pred: np.ndarray, ignore_mask
     tn = np.sum(((~mask_ref) & (~mask_pred)) & use_mask)
     return tp, fp, fn, tn
 
-def compute_metrics(reference_file: str, prediction_file: str, image_reader_writer: BaseReaderWriter,
-                    labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
-                    ignore_label: int = None) -> dict:
-    # load images
-    seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)
-    seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
-
-    ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
-
-    results = {}
-    results['reference_file'] = reference_file
-    results['prediction_file'] = prediction_file
-    results['metrics'] = {}
-    # print(np.count_nonzero(seg_ref == 0.0))
-    # print(np.count_nonzero(seg_ref == 1.0))
-    # print(np.count_nonzero(seg_ref == 2.0))
-    # print(np.count_nonzero(seg_ref == 3.0))
-    ## sum up to be 240*240*155
-
-    for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
-        results['metrics'][r] = {}
-        mask_ref = region_or_label_to_mask(seg_ref, r)
-        mask_pred = region_or_label_to_mask(seg_pred, r)
-        tp, fp, fn, tn = compute_tp_fp_fn_tn(mask_ref, mask_pred, ignore_mask)# np_array(1,155,240,240)
-        if tp + fp + fn == 0:
-            results['metrics'][r]['Dice'] = np.nan
-            results['metrics'][r]['IoU'] = np.nan
-        else:
-            results['metrics'][r]['Dice'] = 2 * tp / (2 * tp + fp + fn)
-            results['metrics'][r]['IoU'] = tp / (tp + fp + fn)
-        results['metrics'][r]['FP'] = fp
-        results['metrics'][r]['TP'] = tp
-        results['metrics'][r]['FN'] = fn
-        results['metrics'][r]['TN'] = tn
-        results['metrics'][r]['n_pred'] = fp + tp
-        results['metrics'][r]['n_ref'] = fn + tp
-    return results
-
+def plot_gaussian_distr(r_samples, mu_r, var_r, save_file_path):
+    plt.hist(r_samples, bins=50, density=True, alpha=0.6, color='b', label="Empirical Distribution")
+    plt.axvline(mu_r, color='r', linestyle='dashed', linewidth=2, label="Theoretical Mean")
+    plt.axvline(mu_r - 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2,
+                label="Theoretical 3σ range")
+    plt.axvline(mu_r + 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2)
+    plt.xlabel("r = x̄ / ȳ")
+    plt.ylabel("Density")
+    plt.title("Distribution of r")
+    plt.xlim(0.12, 0.25)
+    plt.ylim(0, 100)
+    plt.legend()
+    plt.savefig(save_file_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
 def compute_estimator(reference_file: str, prediction_file: str, probability_file: str, image_reader_writer: BaseReaderWriter,
                     labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
@@ -190,31 +166,147 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {}
-    wt_prob_counter,wt_counter = 0, 0
-    # JJ
-    labels_or_regions=[(1,2,3), (2,3), (2,)] # add (2,) as necrosis
-    for r in labels_or_regions: # [(1,2,3), (2,3), (3,)]
-        # per-sample: prob-ratio
-        prob_map, prob_counter = region_or_label_to_mask_prob_add(prob_pred, r)  # joint_prob
-        ## mean? no, just sum up
-        class_map, class_counter = region_or_label_to_mask(seg_ref, r) # joint_gt
-        if r == (1, 2, 3):# denominator: 1∪2∪3
-            wt_prob_counter = prob_counter
-            wt_counter = class_counter
-        if r == (2, 3):# 2∪3
-            results['ratio']['pred_CTR_naive'] = prob_counter/wt_prob_counter# ['naive_core_wt_ratio']
-            results['ratio']['gt_CTR'] = class_counter / wt_counter# ['gt_core_wt_ratio']
-        if r == (2,):# 2
-            results['ratio']['pred_NTR_naive'] = prob_counter/wt_prob_counter # ['naive_necrosis_wt_ratio']
-            results['ratio']['gt_NTR'] = class_counter / wt_counter# ['gt_necrosis_wt_ratio']
+    results['ratio'] = {'naive_ratio':{},'second_corr_ratio':{}}
+    # results['ratio']['naive_ratio']['gaussian_mu_y'] = 23
 
+
+    "consider CE_r,bias_r"
+    # wt_prob_counter,wt_counter = 0, 0
+    # labels_or_regions = [(1,2,3), (2, 3), (2,)]
+    # for r in labels_or_regions: # [(1,2,3), (2,3), (3,)]
+    #     # per-sample: prob-ratio
+    #     prob_map, prob_counter = region_or_label_to_mask_prob_add(prob_pred, r)  # joint_prob
+    #     ## mean? no, just sum up
+    #     class_map, class_counter = region_or_label_to_mask(seg_ref, r) # joint_gt
+    #     if r == (1, 2, 3):# denominator: 1∪2∪3
+    #         wt_prob_counter = prob_counter
+    #         wt_counter = class_counter
+    #     if r == (2, 3):# 2∪3
+    #         results['ratio']['pred_CTR_naive'] = prob_counter/wt_prob_counter# ['naive_core_wt_ratio']
+    #         results['ratio']['gt_CTR'] = class_counter / wt_counter# ['gt_core_wt_ratio']
+    #     if r == (2,):# 2
+    #         results['ratio']['pred_NTR_naive'] = prob_counter/wt_prob_counter # ['naive_necrosis_wt_ratio']
+    #         results['ratio']['gt_NTR'] = class_counter / wt_counter# ['gt_necrosis_wt_ratio']
+    # return results
+
+
+
+    "no gt, just analyze mean/var"
+    labels_or_regions = [(2, 3), (2,)]  # (2,3):core, (2,):necrosis
+    wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
+    nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2, ))  # numerator
+    n = np.size(wt_prob_map)//100 # 8928000
+    ### JJ: np.array
+    # n=1000
+    # normal_distr: mean+variance
+    ## x,y
+    # mu_y, var_y= np.mean(nec_prob_map),np.var(nec_prob_map)
+    # mu_x, var_x= np.mean(wt_prob_map),np.var(wt_prob_map)
+    # cov_xy = np.cov(wt_prob_map.flatten(), nec_prob_map.flatten())[0, 1]
+    # ## r=y/x
+    # mu_r = mu_y / mu_x * (1 + (1 / n) * (var_x / mu_x**2 - cov_xy / (mu_x * mu_y)))
+    # var_r = (mu_y**2 / mu_x**4 * var_x  + var_y / mu_x**2 - 2 * mu_y / mu_x**3 * cov_xy )/ n
+    # ## mc-simulation
+    # n_samples = 10000
+    # # import pdb;pdb.set_trace()
+    # # plot
+    # x_samples = np.random.normal(mu_x, np.sqrt(var_x), (n_samples, n))
+    # y_samples = np.random.normal(mu_y, np.sqrt(var_y), (n_samples, n))
+    # y_bar,x_bar = y_samples.mean(axis=1),x_samples.mean(axis=1)  # (10000,10000) -> (10000,)
+    # r_samples = y_bar / x_bar
+    # empirical_mean, empirical_std = np.mean(r_samples), np.std(r_samples)
+    # # r-distr
+    # plt.hist(r_samples, bins=50, density=True, alpha=0.6, color='b', label="Empirical Distribution")
+    # plt.axvline(mu_r, color='r', linestyle='dashed', linewidth=2, label="Theoretical Mean")
+    # # 3σ-range
+    # plt.axvline(mu_r - 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2,label="Theoretical 3σ range")
+    # plt.axvline(mu_r + 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2)
+    # plt.xlabel("r = x̄ / ȳ")
+    # plt.ylabel("Density")
+    # plt.title("Distribution of r")
+    # plt.xlim(0, 1)
+    # plt.legend()
+    #####################################
+    ### JJ: torch.tensor
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    nec_prob_map = torch.from_numpy(nec_prob_map).float().to(device)
+    wt_prob_map = torch.from_numpy(wt_prob_map).float().to(device)
+    mu_y, var_y = torch.mean(nec_prob_map), torch.var(nec_prob_map)
+    mu_x, var_x = torch.mean(wt_prob_map), torch.var(wt_prob_map)
+    cov_x_y = torch.cov(torch.stack([wt_prob_map.flatten(), nec_prob_map.flatten()]))[0, 1]
+    mu_r = mu_y / mu_x * (1 + (1 / n) * (var_x / mu_x ** 2 - cov_x_y / (mu_x * mu_y)))
+    var_r = (mu_y ** 2 / mu_x ** 4 * var_x + var_y / mu_x ** 2 - 2 * mu_y / mu_x ** 3 * cov_x_y) / n
+    # MC
+    n_samples = 10000
+    x_samples = torch.normal(mu_x, torch.sqrt(var_x), size=(n_samples, n), device=device)
+    y_samples = torch.normal(mu_y, torch.sqrt(var_y), size=(n_samples, n), device=device)
+    y_bar, x_bar = y_samples.mean(dim=1), x_samples.mean(dim=1)
+    #####################################
+    ## naive_r
+    r_samples_naive = y_bar / x_bar
+    empirical_mean, empirical_std = torch.mean(r_samples_naive), torch.std(r_samples_naive)
+    r_samples_naive_cpu = r_samples_naive.cpu().numpy()
+    mu_r = mu_r.cpu().item()
+    var_r = var_r.cpu().item()
+    print("Analyzing naive_r ...")
+    print(f"Empirical mean: {empirical_mean:.4f}, Theoretical mean: {mu_r:.4f}")
+    print(f"Empirical std: {empirical_std:.4f}, Theoretical std: {np.sqrt(var_r):.4f}")
+    # where to save fig
+    root, base_name=os.path.dirname(results['prediction_file']), os.path.basename(results['prediction_file'])
+    root = os.path.join(root, "naive_r_fit_for_gaussian")
+    os.makedirs(root, exist_ok=True)
+    plot_gaussian_distr(r_samples_naive_cpu, mu_r, var_r, os.path.join(root,base_name.replace(".nii.gz","_down100_10k.png")))
+    # dict
+    results['ratio']['naive_ratio']['gaussian_mu_y'], results['ratio']['gaussian_var_y']= mu_y, var_y
+    results['ratio']['naive_ratio']['gaussian_mu_x'], results['ratio']['gaussian_var_x']= mu_x, var_x
+    results['ratio']['naive_ratio']['gaussian_cov_xy'] = cov_x_y
+    results['ratio']['naive_ratio']['gaussian_mu_r'], results['ratio']['gaussian_var_r'] = mu_r, var_r
+    #####################################
+    ## 2_order_corr_r
+    x2_bar = (x_samples**2).mean(dim=1)
+    y2_bar = (y_samples**2).mean(dim=1)
+    cov_x_y = torch.mean((x_samples - x_bar[:, None]) * (y_samples - y_bar[:, None]), dim=1)
+    cov_x2_y = torch.mean((x_samples ** 2 - x2_bar[:, None]) * (y_samples - y_bar[:, None]), dim=1)
+    cov_y2_x = torch.mean((y_samples ** 2 - y2_bar[:, None]) * (x_samples - x_bar[:, None]), dim=1)
+    cov_x2_x = torch.mean((x_samples ** 2 - x2_bar[:, None]) * (x_samples - x_bar[:, None]), dim=1)
+    var_x = x_samples.var(dim=1)
+    var_y = y_samples.var(dim=1)
+    ## r_a* 和 r_b*
+    r_a = cov_x_y / (x_bar * y_bar)
+    r_a_star = r_a * (1 + (1 / (n - 1)) * ((y_bar * cov_x2_y + x_bar * cov_y2_x) / (cov_x_y * x_bar * y_bar) - 4) - (
+                1 / (n - 1)) * (var_x / x_bar ** 2 + var_y / y_bar ** 2 + 2 * cov_x_y / (x_bar * y_bar)))
+
+    r_b = var_x / x_bar ** 2
+    r_b_star = r_b * (1 + (4 / (n - 1)) * ((0.5 * cov_x2_x) / (x_bar * var_x) - 1) - (4 / (n - 1)) * (var_x / x_bar ** 2))
+    r_samples_second_corr = r_samples_naive * (1 - (1 / n) * (r_b_star - r_a_star) - (1 / n ** 2) * (
+                (cov_x2_y - 2 * x_bar * cov_x_y) / (x_bar ** 2 * y_bar) - (cov_x2_x - 2 * x_bar * var_x) / (x_bar ** 3) - (
+                    3 * var_x * cov_x_y) / (x_bar ** 3 * y_bar) + (3 * var_x ** 2) / (x_bar ** 4)))
+    # above, eqn (appendix C)
+    empirical_mean, empirical_std = torch.mean(r_samples_second_corr), torch.std(r_samples_second_corr)
+    r_samples_second_corr_cpu = r_samples_second_corr.cpu().numpy()
+    print("Analyzing second_corr_r ...")
+    print(f"Empirical mean: {empirical_mean:.4f}, Theoretical mean: {mu_r:.4f}")
+    print(f"Empirical std: {empirical_std:.4f}, Theoretical std: {np.sqrt(var_r):.4f}")
+    # where to save fig
+    root, base_name=os.path.dirname(results['prediction_file']), os.path.basename(results['prediction_file'])
+    root = os.path.join(root, "second_corr_r_fit_for_gaussian")
+    os.makedirs(root, exist_ok=True)
+    plot_gaussian_distr(r_samples_second_corr_cpu, mu_r, var_r, os.path.join(root,base_name.replace(".nii.gz","_down100_10k.png")))
+
+    #####################################
+    # dict
+    results['ratio']['second_corr_ratio']['gaussian_mu_y'], results['ratio']['gaussian_var_y']= mu_y, var_y
+    results['ratio']['second_corr_ratio']['gaussian_mu_x'], results['ratio']['gaussian_var_x']= mu_x, var_x
+    results['ratio']['second_corr_ratio']['gaussian_cov_xy'] = cov_x_y
+    results['ratio']['second_corr_ratio']['gaussian_mu_r'], results['ratio']['gaussian_var_r'] = mu_r, var_r
+    asd
     return results
 
 
+
 def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: str,
-                              image_reader_writer: BaseReaderWriter,
-                              file_ending: str,
+                                image_reader_writer: BaseReaderWriter,
+                                file_ending: str,
                               regions_or_labels: Union[List[int], List[Union[int, Tuple[int, ...]]]],
                               ignore_label: int = None,
                               num_processes: int = default_num_processes,
