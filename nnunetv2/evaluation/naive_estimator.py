@@ -39,7 +39,9 @@ def save_summary_json(results: dict, output_file: str):
     ourselves
     """
     results_converted = deepcopy(results)
-    results_converted['r_jaccard'] = {label_or_region_to_key(k): results['r_jaccard'][k] for k in results['r_jaccard'].keys()}
+    results_converted['mean_r_jaccard__ce+123std'] = {label_or_region_to_key(k): results['mean_r_jaccard__ce+123std'][k] for k in results['mean_r_jaccard__ce+123std'].keys()}
+    results_converted['mean_r_range__ce+123std'] = {label_or_region_to_key(k): results['mean_r_range__ce+123std'][k] for k in
+                                           results['mean_r_range__ce+123std'].keys()}
     # convert ratio_per_case
     for i in range(len(results_converted["ratio_per_case"])):
         results_converted["ratio_per_case"][i]['ratio'] = \
@@ -51,7 +53,9 @@ def save_summary_json(results: dict, output_file: str):
 
 def load_summary_json(filename: str):
     results = load_json(filename)
-    results['r_jaccard'] = {key_to_lgabel_or_region(k): results['r_jaccard'][k] for k in results['r_jaccard'].keys()}
+    results['mean_r_jaccard__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_jaccard__ce+123std'][k] for k in results['mean_r_jaccard__ce+123std'].keys()}
+    results['mean_r_range__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_range__ce+123std'][k] for k in
+                                 results['mean_r_range__ce+123std'].keys()}
     # convert ratio_per_case
     for i in range(len(results["ratio_per_case"])):
         results["ratio_per_case"][i]['ratio'] = \
@@ -140,6 +144,26 @@ def plot_gaussian_distr(r_samples, mu_r, var_r, save_file_path):
     plt.savefig(save_file_path, dpi=300, bbox_inches='tight')
     plt.close()
 
+
+def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png'):
+    N = len(r_est_naive)
+    x = np.arange(N);plt.figure(figsize=(10, 5))
+    # avoid overlap
+    plt.scatter(x - 0.1, r_est_naive, color='lightgreen', label='r_est_naive', zorder=3, alpha=0.8)
+    plt.scatter(x + 0.1, r_est_second, color='green', label='r_est_second', zorder=3, alpha=0.8)
+    plt.scatter(x, r_gt, color='red', label='r_gt', zorder=3)
+
+    for i in range(N):
+        # avoid overlap
+        plt.plot([x[i] - 0.1, x[i] - 0.1], bound_naive[i], color='lightgreen', alpha=0.6, linewidth=2, zorder=2)
+        plt.plot([x[i] + 0.1, x[i] + 0.1], bound_second[i], color='green', alpha=0.8, linewidth=2, zorder=2)
+
+    plt.xlabel('Sample Index')
+    plt.ylabel('r Value')
+    plt.legend();plt.grid(True, linestyle='--', alpha=0.5)
+    plt.title('r Values and Confidence Intervals');plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
 def compute_estimator(reference_file: str, prediction_file: str, probability_file: str, image_reader_writer: BaseReaderWriter,
                     labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
                     ignore_label: int = None) -> dict:
@@ -153,7 +177,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {'naive_ratio':{},'second_corr_ratio':{},'iou_scores':{}}
+    results['ratio'] = {'r_gt':{},'r_naive':{},'r_first_corr':{},'r_second_corr':{},'iou_scores':{}}
 
 
     "consider CE_r,bias_r"
@@ -184,35 +208,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
     nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2, ))  # numerator
     n = np.size( wt_prob_map)
-    # Eqn()
-    # y_bar, var_y = torch.mean(nec_prob_map), torch.var(nec_prob_map)
-    # x_bar, var_x = torch.mean(wt_prob_map), torch.var(wt_prob_map)
-    # cov_x_y = torch.cov(torch.stack([wt_prob_map.flatten(), nec_prob_map.flatten()]))[0, 1]
-    # # mu_r = y_bar / x_bar * (1 + (1 / n) * (var_x / x_bar ** 2 - cov_x_y / (x_bar * y_bar))) # --> mean
-    # var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y)/n # --> variance
-    # # Calib-error: epsilon_y,epsilon_x
-    # epsilon_y = 0.01*np.sqrt(var_r) # CE for necrosis(2,)
-    # epsilon_x = 0.01*np.sqrt(var_r) # CE for tumor(1,2,3)
-    # # bound
-    # l_bound = y_bar/x_bar - (y_bar-epsilon_y)/ (x_bar+epsilon_x) + np.sqrt(var_r) # CE_left + σ
-    # r_bound = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar + np.sqrt(var_r)# CE_right + σ
-    # #####################################
-    # ## r_naive (y_bar/x_bar)
-    # print("Analyzing r_naive ...")
-    # r_naive = y_bar / x_bar
-    # #####################################
-    # ## r_1_ord_corr (appendix C)
-    # # print("Analyzing r_1_ord_corr ...")
-    # r_2_ord_corr = 0
-    #
-    # ## r_2_ord_corr (appendix C)
-    # print("Analyzing r_2_ord_corr ...")
-    # x2_bar = torch.mean(wt_prob_map**2)
-    # y2_bar = torch.mean(nec_prob_map**2)
-    # cov_x_y = torch.mean((wt_prob_map - x_bar) * (nec_prob_map - y_bar))
-    # cov_x2_y = torch.mean((wt_prob_map**2 - x2_bar) * (nec_prob_map - y_bar))
-    # cov_y2_x = torch.mean((nec_prob_map**2 - y2_bar) * (wt_prob_map - x_bar))
-    # cov_x2_x = torch.mean((wt_prob_map**2 - x2_bar) * (wt_prob_map - x_bar))
+
     y_bar = np.mean(nec_prob_map)
     var_y = np.var(nec_prob_map)
     x_bar = np.mean(wt_prob_map)
@@ -262,9 +258,12 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     ## no, we not only pred a scalar as logits
     # epsilon_y_single_cano = get_ece_kde_batch(tensor_nec_prob_map[:,None], tensor_nec_gt_map, bandwidth=0.001, p=1,mc_type='canonical',device='cpu')  # binary: 0 vs 2
     # epsilon_x_single_cano = get_ece_kde_batch(tensor_wt_prob_map[:,None], tensor_wt_gt_map, bandwidth=0.001, p=1,mc_type='canonical',device='cpu')  # binary: 0 vs {1,2,3}
-    epsilon_x, epsilon_y = epsilon_x_cano, epsilon_y_cano
-    l_bound = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x) + np.sqrt(var_r)  # CE_left + σ
-    r_bound = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar + np.sqrt(var_r)  # CE_right + σ
+    epsilon_x, epsilon_y = epsilon_x_cano, epsilon_y_cano # cano_kde
+    sigma_r = np.sqrt(var_r)
+    ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x)
+    ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
+    l_bound = ce_left + sigma_r  # CE_left + σ
+    r_bound = ce_right + sigma_r  # CE_right + σ
     #####################################
     ## r_naive (y_bar/x_bar)
     print("Analyzing r_naive ...")
@@ -292,44 +291,45 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                     3 * var_x * cov_x_y) / (x_bar ** 3 * y_bar) + (3 * var_x ** 2) / (x_bar ** 4)))
     ## Mar.19
     "reformulate r to see how interval(x,y) changes"
-    x0, y0 = r_naive-l_bound, r_naive+r_bound# naive_r
-    x1, y1 = r_1_ord_corr-l_bound, r_1_ord_corr+r_bound# 1_order_corr_r
-    x2, y2 = r_2_ord_corr-l_bound, r_2_ord_corr+r_bound# 2_order_corr_r
+    x0, y0 = r_naive-(ce_left + sigma_r), r_naive+(ce_right + sigma_r) # naive_r
+    x1, y1 = r_1_ord_corr-(ce_left + sigma_r), r_1_ord_corr+(ce_right + sigma_r) # 1_order_corr_r
+    x2, y2 = r_2_ord_corr-(ce_left + sigma_r), r_2_ord_corr+(ce_right + sigma_r) # 2_order_corr_r
     #####################################
-    # naive
-    results['ratio']['naive_ratio']['r_estimation'] = r_naive
-    results['ratio']['naive_ratio']['lower_bound_1sigma'] = x0
-    results['ratio']['naive_ratio']['upper_bound_1sigma'] = y0
-    results['ratio']['naive_ratio']['lower_bound_2sigma'] = x0-l_bound
-    results['ratio']['naive_ratio']['upper_bound_2sigma'] = y0+r_bound
-    results['ratio']['naive_ratio']['lower_bound_3sigma'] = x0-2*l_bound
-    results['ratio']['naive_ratio']['upper_bound_3sigma'] = y0+2*r_bound
-    # 1.order
-    results['ratio']['second_corr_ratio']['r_estimation'] = r_1_ord_corr
-    results['ratio']['second_corr_ratio']['lower_bound_1sigma']=x1
-    results['ratio']['second_corr_ratio']['upper_bound_1sigma'] =y1
-    # 2.order
-    results['ratio']['second_corr_ratio']['r_estimation'] = r_2_ord_corr
-    results['ratio']['second_corr_ratio']['lower_bound_1sigma'] = x2
-    results['ratio']['second_corr_ratio']['upper_bound_1sigma'] = y2
-    results['ratio']['second_corr_ratio']['lower_bound_2sigma'] = x2-l_bound
-    results['ratio']['second_corr_ratio']['upper_bound_2sigma'] = y2+r_bound
-    results['ratio']['second_corr_ratio']['lower_bound_3sigma'] = x2-2*l_bound
-    results['ratio']['second_corr_ratio']['upper_bound_3sigma'] = y2+2*r_bound
-    # Jaccard for debiased_r
-    iou_scores_0_2_1sigma = jaccard_segment(x0, y0, x2, y2) # 0.9999373884275414
-    iou_scores_0_2_2sigma = jaccard_segment(x0-l_bound, y0+r_bound, x2-l_bound, y2+r_bound)
-    iou_scores_0_2_3sigma = jaccard_segment(x0-2*l_bound, y0+2*r_bound, x2-2*l_bound, y2+2*r_bound)
-    # iou_scores_0_1 = jaccard_segment(x0, y0, x1, y1)
-    # iou_scores_1_2 = jaccard_segment(x1, y1, x2, y2)
-    results['ratio']['iou_scores']['iou_scores_0_2_1sigma'] = iou_scores_0_2_1sigma
-    results['ratio']['iou_scores']['iou_scores_0_2_2sigma'] = iou_scores_0_2_2sigma
-    results['ratio']['iou_scores']['iou_scores_0_2_3sigma'] = iou_scores_0_2_3sigma
-    ## Mar.20
-    # r_gt
-    import pdb;pdb.set_trace()
+    # gt
     r_gt = nec_gt_counter/wt_gt_counter
-    # plot_r_and_range(r_naive, r_gt, x0, y0, r_2_ord_corr, x2, y2)
+    results['ratio']['r_gt']['r_gt'] = r_gt
+    ## naive
+    results['ratio']['r_naive']['r_est'] = r_naive
+    # [x,y]
+    results['ratio']['r_naive']['bound__ce+1std'] = np.array([x0,y0])
+    results['ratio']['r_naive']['bound__ce+2std'] = np.array([x0-sigma_r,y0+sigma_r])
+    results['ratio']['r_naive']['bound__ce+3std'] = np.array([x0-2*sigma_r,y0+2*sigma_r])
+    # scalar
+    results['ratio']['r_naive']['range__ce+1std'] = (y0-x0).item()
+    results['ratio']['r_naive']['range__ce+2std'] = (y0-x0+2*sigma_r).item()
+    results['ratio']['r_naive']['range__ce+3std'] = (y0-x0+4*sigma_r).item()
+    ## 1.order
+    results['ratio']['r_first_corr']['r_est'] = r_1_ord_corr
+    results['ratio']['r_first_corr']['bound__ce+1std'] = np.array([x1,y1])
+    results['ratio']['r_first_corr']['bound__ce+2std'] = np.array([x1-sigma_r,y1+sigma_r])
+    results['ratio']['r_first_corr']['bound__ce+3std'] = np.array([x1-2*sigma_r,y1+2*sigma_r])
+    results['ratio']['r_first_corr']['range__ce+1std'] = (y1-x1).item()
+    results['ratio']['r_first_corr']['range__ce+2std'] = (y1-x1+2*sigma_r).item()
+    results['ratio']['r_first_corr']['range__ce+3std'] = (y1-x1+4*sigma_r).item()
+    ## 2.order
+    results['ratio']['r_second_corr']['r_est'] = r_2_ord_corr
+    results['ratio']['r_second_corr']['bound__ce+1std'] = np.array([x2,y2])
+    results['ratio']['r_second_corr']['bound__ce+2std'] = np.array([x2-sigma_r,y2+sigma_r])
+    results['ratio']['r_second_corr']['bound__ce+3std'] = np.array([x2-2*sigma_r,y2+2*sigma_r])
+    results['ratio']['r_second_corr']['range__ce+1std'] = (y2-x2).item()
+    results['ratio']['r_second_corr']['range__ce+2std'] = (y2-x2+2*sigma_r).item()
+    results['ratio']['r_second_corr']['range__ce+3std'] = (y2-x2+4*sigma_r).item()
+    # Jaccard(r_naive,r_corr)
+    naive_second_1 = jaccard_segment(x0, y0, x2, y2)
+    naive_second_2 = jaccard_segment(x0-sigma_r, y0+sigma_r, x2-sigma_r, y2+sigma_r)
+    naive_second_3 = jaccard_segment(x0-2*sigma_r, y0+2*sigma_r, x2-2*sigma_r, y2+2*sigma_r)
+    # iou_scores_0_1 = jaccard_segment(x0, y0, x1, y1) # iou_scores_1_2 = jaccard_segment(x1, y1, x2, y2)
+    results['ratio']['iou_scores']['naive_vs_second__ce+123std'] = np.array([naive_second_1,naive_second_2,naive_second_3])
     return results
 
 
@@ -365,64 +365,57 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     #     )
 
     results = []
+    i=0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # result = compute_metrics(ref, pred, image_reader_writer, regions_or_labels, ignore_label) # also do
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label)
         results.append(result)
-        break # JJ
+        i+=1
+        if i==5:
+            break # JJ
 
-    ## mean metric per class
-    ## metric_list = list(results[0]['ratio'][regions_or_labels[0]].keys()) # original(region-based)
-    # metric_list = list(results[0]['ratio'][tuple(regions_or_labels)].keys())  # foreground(label-based)# regions_or_labels = [1,2,3]
-    ## [1,2,3]
-    # means = {}
-    # for r in regions_or_labels:
-    #     means[r] = {}
-    #     for m in metric_list:
-    #         means[r][m] = np.nanmean([i['ratio'][r][m] for i in results])
-
-    # means = {}
-    # for r in ratios:
-    #     means[r] = {}
-    #     means[r] = np.nanmean([item['ratio'][r] for item in results])
-
-    ###################
-    ## Mar.1
-    # ratios = ['pred_NTR_naive','pred_CTR_naive','gt_NTR','gt_CTR']
-    # paired_samples = {}
-    # for r in ratios:  # re-arrange
-    #     paired_samples[r] = {}
-    #     paired_samples[r] = np.array([item['ratio'][r] for item in results])
-    # ## bias&ece over dataset ##
-    # # ratio-bias
-    # bias_and_ece = {}
-    # bias_and_ece['l1_bias_NTR'] = np.mean(paired_samples['pred_NTR_naive']-paired_samples['gt_NTR'])
-    # bias_and_ece['l1_bias_CTR'] = np.mean(paired_samples['pred_CTR_naive']-paired_samples['gt_CTR'])
-    # # ratio-ECE:
-    # bias_and_ece['ece_bins_NTR'] = fast_ece(paired_samples['gt_NTR'], paired_samples['pred_NTR_naive'], n_bins=20)["ECE"] # JJ: Mar.02
-    # bias_and_ece['ece_bins_CTR'] = fast_ece(paired_samples['gt_CTR'], paired_samples['pred_CTR_naive'], n_bins=20)["ECE"]
-    #
-    # [recursive_fix_for_json_export(i) for i in results]
-    # recursive_fix_for_json_export(bias_and_ece)
-    # result = {'bias_and_ece': bias_and_ece,'ratio_per_case': results}
-
-    ## Mar.19
-    scores = ['iou_scores_0_2_1sigma','iou_scores_0_2_2sigma','iou_scores_0_2_3sigma']
+    ## Jaccard: overlap metrics
     paired_samples = {}
+    mean_r_jaccard = {}
+    scores = ['naive_vs_second__ce+123std',] # scores = ['naive_vs_first_123std','first_vs_second_123std']
     for r in scores:  # re-arrange
         paired_samples[r] = {}
-        paired_samples[r] = np.array([item['ratio']['iou_scores'][r] for item in results])
-    r_jaccard = {}
-    # import pdb;pdb.set_trace()
-    r_jaccard['iou_scores_0_2_1sigma'] = np.mean(paired_samples['iou_scores_0_2_1sigma'])
-    r_jaccard['iou_scores_0_2_2sigma'] = np.mean(paired_samples['iou_scores_0_2_2sigma'])
-    r_jaccard['iou_scores_0_2_3sigma'] = np.mean(paired_samples['iou_scores_0_2_3sigma'])
+        paired_samples[r]['iou_scores'] = np.array([item['ratio']['iou_scores'][r] for item in results])
+        mean_r_jaccard[r] = np.mean(paired_samples[r]['iou_scores'],axis=0)
 
+    ## Range: as narrow as possible
+    mean_r_range = {}
+    scores = ['r_naive','r_first_corr','r_second_corr']
+    for r in scores:
+        paired_samples[r] = {}
+        paired_samples[r]['bound__ce+1std'] = np.array([item['ratio'][r]['bound__ce+1std'] for item in results]) # [N,2]
+        paired_samples[r]['bound__ce+2std'] = np.array([item['ratio'][r]['bound__ce+2std'] for item in results])
+        paired_samples[r]['bound__ce+3std'] = np.array([item['ratio'][r]['bound__ce+3std'] for item in results])
+        paired_samples[r]['range__ce+1std'] = np.array([item['ratio'][r]['range__ce+1std'] for item in results]) # [N,]
+        paired_samples[r]['range__ce+2std'] = np.array([item['ratio'][r]['range__ce+2std'] for item in results])
+        paired_samples[r]['range__ce+3std'] = np.array([item['ratio'][r]['range__ce+3std'] for item in results])
+        paired_samples[r]['r_est'] = np.array([item['ratio'][r]['r_est'] for item in results])# [N,]
+        r_range_123 = np.stack((paired_samples[r]['range__ce+1std'],paired_samples[r]['range__ce+2std'],paired_samples[r]['range__ce+3std']),axis=1)
+        mean_r_range[r] = np.mean(r_range_123,axis=0)
+
+    paired_samples['r_gt'] = {}
+    paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
+    # write into json
     [recursive_fix_for_json_export(i) for i in results]
-    recursive_fix_for_json_export(r_jaccard)
-    result = {'r_jaccard': r_jaccard,'ratio_per_case': results}
+    recursive_fix_for_json_export(mean_r_jaccard)
+    recursive_fix_for_json_export(mean_r_range)
+    result = {'mean_r_jaccard__ce+123std': mean_r_jaccard,'mean_r_range__ce+123std':mean_r_range,'ratio_per_case': results}
     if output_file is not None:
         save_summary_json(result, output_file)
+
+    # plot the range ~ce+1std
+    # import pdb;pdb.set_trace()
+    bound_naive = paired_samples['r_naive']['bound__ce+1std']
+    bound_second = paired_samples['r_second_corr']['bound__ce+1std']
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_est_second = paired_samples['r_second_corr']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    plot_r_and_range(r_est_naive[:5], r_est_second[:5], r_gt[:5], bound_naive[:5,:], bound_second[:5,:], "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range.png")# only plot 10 volumes
     return result
 
 
