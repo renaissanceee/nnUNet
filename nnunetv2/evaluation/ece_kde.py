@@ -156,24 +156,44 @@ def get_ratio_marginal_vect(f, y, bandwidth, p, device):
 
     return get_kde_for_ece_vect(f, y_onehot, log_kern_vect, p)
 
+# def get_ratio_marginal_vect_batch(f, y, bandwidth, p, device):
+#     batch_size = 1000
+#     num_classes = f.shape[1]
+#     batch_ratio =[]
+#     for i in range(0, len(f), batch_size):
+#         batch_f = f[i: min(i + batch_size, len(f))]
+#         batch_y = y[i: min(i + batch_size, len(y))]
+#         y_onehot = nn.functional.one_hot(batch_y, num_classes=batch_f.shape[1]).to(torch.float32)
+#         log_kern_vect = beta_kernel(batch_f, batch_f, bandwidth).squeeze()
+#         log_kern_diag = torch.diag(torch.finfo(torch.float).min * torch.ones(len(batch_f))).to(device)
+#         # Multiclass case
+#         log_kern_diag_repeated = batch_f.shape[1] * [log_kern_diag]
+#         log_kern_diag_repeated = torch.stack(log_kern_diag_repeated, dim=2)
+#         log_kern_vect = log_kern_vect + log_kern_diag_repeated
+#         batch_ratio.append(get_kde_for_ece_vect_batch(batch_f, y_onehot, log_kern_vect, p))
+#         # import pdb;pdb.set_trace()
+#     ratio= torch.cat(batch_ratio, dim=0)
+#     # return torch.sum(torch.mean(ratio, dim=0))
+#     return torch.mean(ratio, dim=0)
+
+
 def get_ratio_marginal_vect_batch(f, y, bandwidth, p, device):
     batch_size = 1000
-    num_classes = f.shape[1]
-    batch_ratio =[]
+    num_classes = f.shape[1] 
+    batch_ratio = []
     for i in range(0, len(f), batch_size):
         batch_f = f[i: min(i + batch_size, len(f))]
         batch_y = y[i: min(i + batch_size, len(y))]
-        y_onehot = nn.functional.one_hot(batch_y, num_classes=batch_f.shape[1]).to(torch.float32)
+        y_onehot = nn.functional.one_hot(batch_y, num_classes=num_classes).to(torch.float32)
         log_kern_vect = beta_kernel(batch_f, batch_f, bandwidth).squeeze()
-        log_kern_diag = torch.diag(torch.finfo(torch.float).min * torch.ones(len(batch_f))).to(device)
+        log_kern_diag = torch.full((len(batch_f),), float('-inf')).to(device)
+        log_kern_diag = torch.diag(log_kern_diag) 
         # Multiclass case
-        log_kern_diag_repeated = batch_f.shape[1] * [log_kern_diag]
+        log_kern_diag_repeated = [log_kern_diag] * num_classes
         log_kern_diag_repeated = torch.stack(log_kern_diag_repeated, dim=2)
         log_kern_vect = log_kern_vect + log_kern_diag_repeated
-        batch_ratio.append(get_kde_for_ece_vect_batch(batch_f, y_onehot, log_kern_vect, p))
-        # import pdb;pdb.set_trace()
-    ratio= torch.cat(batch_ratio, dim=0)
-    # return torch.sum(torch.mean(ratio, dim=0))
+        batch_ratio.append(get_kde_for_ece_vect(batch_f, y_onehot, log_kern_vect, p))
+    ratio = torch.cat(batch_ratio, dim=0)
     return torch.mean(ratio, dim=0)
 
 def get_ratio_toplabel(f, y, bandwidth, p, device):

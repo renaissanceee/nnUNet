@@ -148,20 +148,20 @@ def plot_gaussian_distr(r_samples, mu_r, var_r, save_file_path):
 def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png'):
     N = len(r_est_naive)
     x = np.arange(N);plt.figure(figsize=(10, 5))
-    # avoid overlap
+    # avoid overlap: 0.1
     plt.scatter(x - 0.1, r_est_naive, color='lightgreen', label='r_est_naive', zorder=3, alpha=0.8)
     plt.scatter(x + 0.1, r_est_second, color='green', label='r_est_second', zorder=3, alpha=0.8)
     plt.scatter(x, r_gt, color='red', label='r_gt', zorder=3)
 
     for i in range(N):
-        # avoid overlap
+        # avoid overlap: 0.1
         plt.plot([x[i] - 0.1, x[i] - 0.1], bound_naive[i], color='lightgreen', alpha=0.6, linewidth=2, zorder=2)
         plt.plot([x[i] + 0.1, x[i] + 0.1], bound_second[i], color='green', alpha=0.8, linewidth=2, zorder=2)
 
-    plt.xlabel('Sample Index')
+    plt.xlabel('Volume i')
     plt.ylabel('r Value')
     plt.legend();plt.grid(True, linestyle='--', alpha=0.5)
-    plt.title('r Values and Confidence Intervals');plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.title('r Values and Confidence Intervals(±$\sigma$)');plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
 def compute_estimator(reference_file: str, prediction_file: str, probability_file: str, image_reader_writer: BaseReaderWriter,
@@ -223,26 +223,6 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     tensor_wt_prob_map = torch.from_numpy(wt_prob_map.reshape(-1))
     tensor_nec_gt_map = torch.from_numpy(nec_gt_map.reshape(-1)).to(torch.int64)
     tensor_wt_gt_map = torch.from_numpy(wt_gt_map.reshape(-1)).to(torch.int64)
-    # ece: binary
-    ece_bins_y= fast_ece(nec_gt_map.squeeze(0).reshape(-1), nec_prob_map.reshape(-1), n_bins=20)["ECE"]
-    ece_bins_x = fast_ece(wt_gt_map.squeeze(0).reshape(-1), wt_prob_map.reshape(-1), n_bins=20)["ECE"]
-    print(f"ece_bins_y,ece_bins_x: {ece_bins_y},{ece_bins_x}")
-
-
-    ################################
-    # ece-kde: classwise
-    # epsilon = get_ece_kde_batch(tensor_prob_pred, tensor_seg_ref, bandwidth=0.001, p=1, mc_type='marginal',device='cpu') # classwise
-    # bg_indices = torch.nonzero(tensor_seg_ref, as_tuple=False)# 57305 in 240*240*155
-    # tensor_seg_ref_123 = tensor_seg_ref[bg_indices] # exclude 0
-    # tensor_prob_pred_123 = tensor_prob_pred[bg_indices] # exclude 0
-    # epsilon_x_cano = get_ece_kde_batch(tensor_prob_pred_123.squeeze(1), tensor_seg_ref_123.squeeze(1), bandwidth=0.001, p=1,
-    #                                    mc_type='canonical',device='cpu')  # canonical_123: 0.26 (FG)
-    # epsilon_y = epsilon[2]
-    # epsilon_x = epsilon[1]+epsilon[2]+epsilon[3]
-    # print(f"epsilon_y,epsilon_x: {epsilon_y},{epsilon_x}")
-    # 问题是，ece_x,ece_y大小不一定，epsilon_x>epsilon_y一定
-    # ece_kde: 'top_label','marginal'
-    ################################
 
     # Mar.20
     ## construct binary-classifier for {2} and {1,2,3}
@@ -254,25 +234,19 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     epsilon_x_cano = get_ece_kde_batch(binary_prob_wt_others, tensor_wt_gt_map, bandwidth=0.001, p=1,
                                        mc_type='canonical',device='cpu')  # binary: 0 vs {1,2,3}
     print(f"ece_kde_y,ece_kde_x: {epsilon_y_cano},{epsilon_x_cano}")
-    ## or we should use real-binary: tensor_nec_prob_map?
-    ## no, we not only pred a scalar as logits
-    # epsilon_y_single_cano = get_ece_kde_batch(tensor_nec_prob_map[:,None], tensor_nec_gt_map, bandwidth=0.001, p=1,mc_type='canonical',device='cpu')  # binary: 0 vs 2
-    # epsilon_x_single_cano = get_ece_kde_batch(tensor_wt_prob_map[:,None], tensor_wt_gt_map, bandwidth=0.001, p=1,mc_type='canonical',device='cpu')  # binary: 0 vs {1,2,3}
+
     epsilon_x, epsilon_y = epsilon_x_cano, epsilon_y_cano # cano_kde
     sigma_r = np.sqrt(var_r)
     ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x)
     ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
-    l_bound = ce_left + sigma_r  # CE_left + σ
-    r_bound = ce_right + sigma_r  # CE_right + σ
+    l_range = ce_left + sigma_r  # CE_left + σ
+    r_range = ce_right + sigma_r  # CE_right + σ
+    # range__ce+1std = ce_left + ce_right + 2*sigma_r
     #####################################
     ## r_naive (y_bar/x_bar)
     print("Analyzing r_naive ...")
     r_naive = y_bar / x_bar
-    #####################################
-    ## r_1_ord_corr (appendix C)
-    r_1_ord_corr = 0
-    #####################################
-    ## r_2_ord_corr (appendix C)
+    ## (appendix C)
     print("Analyzing r_2_ord_corr ...")
     x2_bar = np.mean(wt_prob_map ** 2)
     y2_bar = np.mean(nec_prob_map ** 2)
@@ -286,6 +260,9 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                 1 / (n - 1)) * (var_x / x_bar ** 2 + var_y / y_bar ** 2 + 2 * cov_x_y / (x_bar * y_bar)))
     r_b = var_x / x_bar ** 2
     r_b_star = r_b * (1 + (4 / (n - 1)) * ((0.5 * cov_x2_x) / (x_bar * var_x) - 1) - (4 / (n - 1)) * (var_x / x_bar ** 2))
+    ## r_1_ord_corr
+    r_1_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star)
+    ## r_2_ord_corr
     r_2_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star) - (1 / n ** 2) * (
                 (cov_x2_y - 2 * x_bar * cov_x_y) / (x_bar ** 2 * y_bar) - (cov_x2_x - 2 * x_bar * var_x) / (x_bar ** 3) - (
                     3 * var_x * cov_x_y) / (x_bar ** 3 * y_bar) + (3 * var_x ** 2) / (x_bar ** 4)))
@@ -365,14 +342,10 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     #     )
 
     results = []
-    i=0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # result = compute_metrics(ref, pred, image_reader_writer, regions_or_labels, ignore_label) # also do
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label)
         results.append(result)
-        i+=1
-        if i==5:
-            break # JJ
 
     ## Jaccard: overlap metrics
     paired_samples = {}
@@ -409,13 +382,17 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         save_summary_json(result, output_file)
 
     # plot the range ~ce+1std
-    # import pdb;pdb.set_trace()
     bound_naive = paired_samples['r_naive']['bound__ce+1std']
     bound_second = paired_samples['r_second_corr']['bound__ce+1std']
     r_est_naive = paired_samples['r_naive']['r_est']
     r_est_second = paired_samples['r_second_corr']['r_est']
     r_gt = paired_samples['r_gt']['r_gt']
-    plot_r_and_range(r_est_naive[:5], r_est_second[:5], r_gt[:5], bound_naive[:5,:], bound_second[:5,:], "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range.png")# only plot 10 volumes
+    # only plot 10 volumes
+    plot_r_and_range(r_est_naive[:10], r_est_second[:10], r_gt[:10], bound_naive[:10,:], bound_second[:10,:], "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range_ten.png")
+    plot_r_and_range(r_est_naive[10:20], r_est_second[10:20], r_gt[10:20], bound_naive[10:20, :], bound_second[10:20, :],
+                     "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range_twenty.png")
+    # visualize volume: uncertainty map
+    # JJ
     return result
 
 

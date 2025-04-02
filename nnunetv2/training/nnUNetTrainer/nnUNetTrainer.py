@@ -67,6 +67,7 @@ from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
 from nnunetv2.utilities.helpers import empty_cache, dummy_context
 from nnunetv2.utilities.label_handling.label_handling import convert_labelmap_to_one_hot, determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
+from nnunetv2.evaluation.ece_kde import get_ece_kde, get_ece_kde_batch
 
 
 class nnUNetTrainer(object):
@@ -135,7 +136,8 @@ class nnUNetTrainer(object):
         self.preprocessed_dataset_folder = join(self.preprocessed_dataset_folder_base,
                                                 self.configuration_manager.data_identifier)
         # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_preprocessed/Dataset137_BraTS2021/nnUNetPlans_2d'
-        self.raw_dataset_folder_base = join(nnUNet_raw, self.plans_manager.dataset_name) # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021'
+        self.raw_dataset_folder_base = join(nnUNet_raw,
+                                            self.plans_manager.dataset_name)  # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021'
         # unlike the previous nnunet folder_with_segs_from_previous_stage is now part of the plans. For now it has to
         # be a different configuration in the same plans
         # IMPORTANT! the mapping must be bijective, so lowres must point to fullres and vice versa (using
@@ -212,7 +214,7 @@ class nnUNetTrainer(object):
             self.num_input_channels = determine_num_input_channels(self.plans_manager, self.configuration_manager,
                                                                    self.dataset_json)
 
-            self.network = self.build_network_architecture(# PlainConvUNet
+            self.network = self.build_network_architecture(  # PlainConvUNet
                 self.configuration_manager.network_arch_class_name,
                 self.configuration_manager.network_arch_init_kwargs,
                 self.configuration_manager.network_arch_init_kwargs_req_import,
@@ -585,7 +587,6 @@ class nnUNetTrainer(object):
                 splits = load_json(splits_file)
                 self.print_to_log_file(f"The split file contains {len(splits)} splits.")
                 # len(splits[0]['train'])=1000 len(splits[0]['val'])=251
-                # import pdb;pdb.set_trace()
 
             self.print_to_log_file("Desired fold for training: %d" % self.fold)
             if self.fold < len(splits):
@@ -618,12 +619,12 @@ class nnUNetTrainer(object):
         # JJ: save val/.nii.gz as Ts
         # JJ: notice: self.fold
         set_val_folder_img = join(self.raw_dataset_folder_base, "imagesTr")
-        set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_"+str(self.fold))
+        set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_" + str(self.fold))
         set_val_folder_label = join(self.raw_dataset_folder_base, "labelsTr")
-        set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_"+str(self.fold))
+        set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
         os.makedirs(set_test_folder_img, exist_ok=True)
         os.makedirs(set_test_folder_label, exist_ok=True)
-        for c in val_keys: # c is BraTS2021_00000, but we need ->BraTS2021_00000_0000.nii.gz/ ..._0001.nii.gz / ..._0002.nii.gz/ ..._0003.nii.gz
+        for c in val_keys:  # c is BraTS2021_00000, but we need ->BraTS2021_00000_0000.nii.gz/ ..._0001.nii.gz / ..._0002.nii.gz/ ..._0003.nii.gz
             shutil.copy(join(set_val_folder_img, c + "_0000.nii.gz"), join(set_test_folder_img, c + '_0000.nii.gz'))
             shutil.copy(join(set_val_folder_img, c + "_0001.nii.gz"), join(set_test_folder_img, c + '_0001.nii.gz'))
             shutil.copy(join(set_val_folder_img, c + "_0002.nii.gz"), join(set_test_folder_img, c + '_0002.nii.gz'))
@@ -634,7 +635,6 @@ class nnUNetTrainer(object):
             shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
             shutil.copy(join(set_val_folder_label, c + ".nii.gz"), join(set_test_folder_label, c + '.nii.gz'))
             # /nnUNet_raw/Dataset137_BraTS2021/labelsTs/BraTS2021_00000.nii.gz
-        # import pdb;pdb.set_trace()
         ###########################
 
         # load the datasets for training and validation. Note that we always draw random samples so we really don't
@@ -1005,7 +1005,7 @@ class nnUNetTrainer(object):
         # lrs are the same for all workers so we don't need to gather them in case of DDP training
         self.logger.log('lrs', self.optimizer.param_groups[0]['lr'], self.current_epoch)
 
-    def train_step(self, batch: dict) -> dict:
+    def train_step(self, batch: dict, epoch: int, start_epoch: int) -> dict:
         data = batch['data']
         target = batch['target']
 
@@ -1022,9 +1022,68 @@ class nnUNetTrainer(object):
         # So autocast will only be active if we have a cuda device.
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             output = self.network(data)
-            # print(output)# len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
-            # del data
-            l = self.loss(output, target)# target only includes True/False
+            l = self.loss(output, target)  # target only includes True/False
+            print(f"seg_loss {l}")
+            # print(output)
+            # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
+            # for label-based: replace 3 with 4 ->label 0,1,2,3
+            # output is after softmax, should be propobablity[]
+            #####################
+            # f = torch.rand((2000, 3));f = f / torch.sum(f, dim=1).unsqueeze(-1)
+            # y = torch.randint(0, 3, (2000,))
+            # ce_batch = get_ece_kde_batch(f, y, bandwidth=0.02, p=1, mc_type='canonical', device='cpu')
+            # ce = get_ece_kde(f, y, bandwidth=0.02, p=1, mc_type='canonical', device='cpu')
+            #####################
+            softmax_output = [torch.softmax(feat, dim=1) for feat in output]
+            if epoch>=start_epoch:
+                "Calib-bound(dirich): epsilon_x, epsilon_y ~r"
+                # 5 scales or only full-resl?
+                for scale in range(len(softmax_output)):  # necrosis: 2, wt: 1,2,3
+                    import pdb;pdb.set_trace()
+                    tensor_nec_prob_map = softmax_output[scale][:, 2, :, :].reshape(-1,1)
+                    tensor_wt_prob_map = (softmax_output[scale][:, 1, :, :] + softmax_output[scale][:, 2, :, :] + softmax_output[scale][:, 3, :,:]).reshape(-1,1)
+                    tensor_nec_gt_map = torch.where(target[scale] == 2, 1, 0).reshape(-1)  # {2} as 1, others as 0
+                    tensor_wt_gt_map = torch.clamp(target[scale], max=1).reshape(-1).to(torch.int64)  # {1,2,3} as 1
+                    "1) var_r"
+                    y_bar = torch.mean(tensor_nec_prob_map)
+                    var_y = torch.var(tensor_nec_prob_map)
+                    x_bar = torch.mean(tensor_wt_prob_map)
+                    var_x = torch.var(tensor_wt_prob_map)
+                    cov_x_y = torch.cov(torch.stack((tensor_wt_prob_map.squeeze(-1), tensor_nec_prob_map.squeeze(-1))))[0, 1]
+                    n = tensor_wt_prob_map.shape[0]
+                    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+                    sigma_r = torch.sqrt(var_r)
+                    "2) cali_r"
+                    ## choice-0: cano_y and cano_x
+                    # should construct binary_prob[N,2] for: 2_vs_others, 123_vs_others? -> dirichlet for [N,2]
+                    # preprocess: construct [N,2]
+                    # binary_prob_nec_others = torch.stack((1 - tensor_nec_prob_map, tensor_nec_prob_map),
+                    #                                      dim=1)  # prob_others, prob_nec
+                    # binary_prob_wt_others = torch.stack((1 - tensor_wt_prob_map, tensor_wt_prob_map), dim=1)
+                    # binary_prob_wt_others = torch.clamp(binary_prob_wt_others, min=0, max=1)  # avoid neg value
+                    ## choice-1: binary
+                    epsilon_y = get_ece_kde_batch(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth=0.02, p=1,
+                                                  mc_type='canonical', device=self.device)  # binary: {2} vs {0,1,3}  # inf????
+                    epsilon_x = get_ece_kde_batch(tensor_wt_prob_map, tensor_wt_gt_map, bandwidth=0.02, p=1,
+                                                  mc_type='canonical', device=self.device)  # binary: {1,2,3} vs {0}
+                    ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x) # nan????
+                    ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
+                    ## choice-2: class_y, class_x
+                    # ...
+                    "3) range"
+                    l_range = ce_left + sigma_r  # CE_left + σ
+                    r_range = ce_right + sigma_r  # CE_right + σ
+                    if scale == 0:
+                        ce_var_range = l_range + r_range
+                    else:
+                        ce_var_range = ce_var_range + l_range + r_range
+                    import pdb;pdb.set_trace()
+                    print(f"scale {scale} range {ce_var_range}")
+                    # break # avoid killed
+                    # JJ: or just calc the full-resol
+                #####################
+                lambda_range = 0.1
+                l = l + lambda_range * ce_var_range
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()
@@ -1037,6 +1096,52 @@ class nnUNetTrainer(object):
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
             self.optimizer.step()
         return {'loss': l.detach().cpu().numpy()}
+
+    # def train_step(self, batch: dict) -> dict:
+    #     data = batch['data']
+    #     target = batch['target']
+    #
+    #     data = data.to(self.device, non_blocking=True)
+    #     if isinstance(target, list):
+    #         target = [i.to(self.device, non_blocking=True) for i in target]
+    #     else:
+    #         target = target.to(self.device, non_blocking=True)
+    #
+    #     self.optimizer.zero_grad(set_to_none=True)
+    #     # Autocast can be annoying
+    #     # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
+    #     # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
+    #     # So autocast will only be active if we have a cuda device.
+    #     with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+    #         output = self.network(data)
+    #         # print(output)
+    #         # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
+    #         # for label-based: replace 3 with 4 ->label 0,1,2,3
+    #         l = self.loss(output, target)# target only includes True/False
+    #
+    #     if self.grad_scaler is not None:
+    #         self.grad_scaler.scale(l).backward()
+    #         self.grad_scaler.unscale_(self.optimizer)
+    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+    #         self.grad_scaler.step(self.optimizer)
+    #         self.grad_scaler.update()
+    #     else:
+    #         l.backward()
+    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+    #         self.optimizer.step()
+    #     return {'loss': l.detach().cpu().numpy()}
+
+    def on_train_epoch_end(self, train_outputs: List[dict]):
+        outputs = collate_outputs(train_outputs)
+
+        if self.is_ddp:
+            losses_tr = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(losses_tr, outputs['loss'])
+            loss_here = np.vstack(losses_tr).mean()
+        else:
+            loss_here = np.mean(outputs['loss'])
+
+        self.logger.log('train_losses', loss_here, self.current_epoch)
 
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
@@ -1393,12 +1498,16 @@ class nnUNetTrainer(object):
         self.on_train_start()
 
         for epoch in range(self.current_epoch, self.num_epochs):
+            print(f"at epoch {epoch}")
             self.on_epoch_start()
 
             self.on_train_epoch_start()
             train_outputs = []
+            start_epoch = 0 # ToDo
+
             for batch_id in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train)))
+                train_outputs.append(self.train_step(next(self.dataloader_train), epoch, start_epoch))
+
             self.on_train_epoch_end(train_outputs)
 
             with torch.no_grad():
