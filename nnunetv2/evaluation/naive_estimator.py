@@ -16,8 +16,9 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
-from nnunetv2.evaluation.fast_ece import fast_ece#, fast_ece_batch
-from nnunetv2.evaluation.ece_kde import get_ece_kde, get_ece_kde_batch
+from nnunetv2.evaluation.fast_ece import fast_ece
+from nnunetv2.evaluation.ece_kde import get_ece_kde
+
 
 def label_or_region_to_key(label_or_region: Union[int, Tuple[int]]):
     return str(label_or_region)
@@ -39,23 +40,25 @@ def save_summary_json(results: dict, output_file: str):
     ourselves
     """
     results_converted = deepcopy(results)
-    results_converted['mean_r_jaccard__ce+123std'] = {label_or_region_to_key(k): results['mean_r_jaccard__ce+123std'][k] for k in results['mean_r_jaccard__ce+123std'].keys()}
-    results_converted['mean_r_range__ce+123std'] = {label_or_region_to_key(k): results['mean_r_range__ce+123std'][k] for k in
-                                           results['mean_r_range__ce+123std'].keys()}
+    results_converted['mean_r_jaccard__ce+123std'] = {label_or_region_to_key(k): results['mean_r_jaccard__ce+123std'][k]
+                                                      for k in results['mean_r_jaccard__ce+123std'].keys()}
+    results_converted['mean_r_range__ce+123std'] = {label_or_region_to_key(k): results['mean_r_range__ce+123std'][k] for
+                                                    k in
+                                                    results['mean_r_range__ce+123std'].keys()}
     # convert ratio_per_case
     for i in range(len(results_converted["ratio_per_case"])):
         results_converted["ratio_per_case"][i]['ratio'] = \
             {label_or_region_to_key(k): results["ratio_per_case"][i]['ratio'][k]
              for k in results["ratio_per_case"][i]['ratio'].keys()}
     # sort_keys=True will make foreground_mean the first entry and thus easy to spot
-    save_json(results_converted, output_file, sort_keys=False)#  sort_keys=True
-
+    save_json(results_converted, output_file, sort_keys=False)  # sort_keys=True
 
 def load_summary_json(filename: str):
     results = load_json(filename)
-    results['mean_r_jaccard__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_jaccard__ce+123std'][k] for k in results['mean_r_jaccard__ce+123std'].keys()}
+    results['mean_r_jaccard__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_jaccard__ce+123std'][k] for k in
+                                            results['mean_r_jaccard__ce+123std'].keys()}
     results['mean_r_range__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_range__ce+123std'][k] for k in
-                                 results['mean_r_range__ce+123std'].keys()}
+                                          results['mean_r_range__ce+123std'].keys()}
     # convert ratio_per_case
     for i in range(len(results["ratio_per_case"])):
         results["ratio_per_case"][i]['ratio'] = \
@@ -73,42 +76,47 @@ def region_or_label_to_mask(segmentation: np.ndarray, region_or_label: Union[int
         return segmentation == region_or_label
     else:
         mask = np.zeros_like(segmentation, dtype=bool)
-        for r in region_or_label:# 1,2,3
+        for r in region_or_label:  # 1,2,3
             mask[segmentation == r] = True
     return mask, np.count_nonzero(mask)
 
-def region_or_label_to_mask_prob_max(segmentation: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
+
+def region_or_label_to_mask_prob_max(segmentation: np.ndarray,
+                                     region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
     if np.isscalar(region_or_label):
         return segmentation == region_or_label
     else:
         mask = np.zeros_like(mask_ref)
-        for r in region_or_label:# 1,2,3
-            cur_seg_channel_map = segmentation[r-1,:,:,:][None,...]
-            mask = np.maximum(mask, cur_seg_channel_map) # take max confidence over 3-channels
-    mask[~mask_ref] = 0 # only consider tp pixels
+        for r in region_or_label:  # 1,2,3
+            cur_seg_channel_map = segmentation[r - 1, :, :, :][None, ...]
+            mask = np.maximum(mask, cur_seg_channel_map)  # take max confidence over 3-channels
+    mask[~mask_ref] = 0  # only consider tp pixels
     return mask, np.sum(mask)
 
-def region_or_label_to_mask_prob_multiply(segmentation: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
+
+def region_or_label_to_mask_prob_multiply(segmentation: np.ndarray,
+                                          region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
     if np.isscalar(region_or_label):
         return segmentation == region_or_label
     else:
         mask = np.zeros(segmentation.shape[1:])
         for r in region_or_label:  # 1,2,3
             if r == region_or_label[0]:
-                mask = segmentation[r-1, :, :, :][None, ...]  # init as non-zero
+                mask = segmentation[r - 1, :, :, :][None, ...]  # init as non-zero
             else:
-                cur_seg_channel_map = segmentation[r-1, :, :, :][None, ...]
+                cur_seg_channel_map = segmentation[r - 1, :, :, :][None, ...]
                 mask = mask * cur_seg_channel_map  # take prduction over 3-channels
-    # print(f'Denominator. Production is {np.sum(mask)}')
     return mask, np.sum(mask)
 
-def region_or_label_to_mask_prob_add(segmentation: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
+
+def region_or_label_to_mask_prob_add(segmentation: np.ndarray,
+                                     region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
     if np.isscalar(region_or_label):
         return segmentation == region_or_label
     else:
         mask = np.zeros(segmentation.shape[1:])
         for r in region_or_label:  # 1,2,3
-            mask = mask + segmentation[r, :, :, :]# mask[z,x,y], seg:4-channel
+            mask = mask + segmentation[r, :, :, :]  # mask[z,x,y], seg:4-channel
     return mask, np.sum(mask)
 
 
@@ -123,52 +131,298 @@ def compute_tp_fp_fn_tn(mask_ref: np.ndarray, mask_pred: np.ndarray, ignore_mask
     tn = np.sum(((~mask_ref) & (~mask_pred)) & use_mask)
     return tp, fp, fn, tn
 
+
 def jaccard_segment(x1, y1, x2, y2):
     """directed line seg (x1, y1) (x2, y2) """
     intersection = max(0, min(y1, y2) - max(x1, x2))  # 交集长度
     union = max(y1, y2) - min(x1, x2)  # 并集长度
     return intersection / union if union > 0 else 0
 
-def plot_gaussian_distr(r_samples, mu_r, var_r, save_file_path):
-    plt.hist(r_samples, bins=50, density=True, alpha=0.6, color='b', label="Empirical Distribution")
-    plt.axvline(mu_r, color='r', linestyle='dashed', linewidth=2, label="Theoretical Mean")
-    plt.axvline(mu_r - 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2,
-                label="Theoretical 3σ range")
-    plt.axvline(mu_r + 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2)
-    plt.xlabel("r = x̄ / ȳ")
-    plt.ylabel("Density")
-    plt.title("Distribution of r")
-    plt.xlim(0.12, 0.25)
-    plt.ylim(0, 100)
-    plt.legend()
-    plt.savefig(save_file_path, dpi=300, bbox_inches='tight')
+
+# def plot_gaussian_distr(r_samples, mu_r, var_r, save_file_path):
+#     plt.hist(r_samples, bins=50, density=True, alpha=0.6, color='b', label="Empirical Distribution")
+#     plt.axvline(mu_r, color='r', linestyle='dashed', linewidth=2, label="Theoretical Mean")
+#     plt.axvline(mu_r - 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2,
+#                 label="Theoretical 3σ range")
+#     plt.axvline(mu_r + 3 * np.sqrt(var_r), color='orange', linestyle='dotted', linewidth=2)
+#     plt.xlabel("r = x̄ / ȳ");plt.ylabel("Density")
+#     plt.title("Distribution of r")
+#     plt.xlim(0.12, 0.25);plt.ylim(0, 100)
+#     plt.legend()
+#     plt.savefig(save_file_path, dpi=300, bbox_inches='tight');plt.close()
+
+def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
+    # n = np.size(tensor_nec_prob_map)
+    # y_bar = np.mean(nec_prob_map)
+    # var_y = np.var(nec_prob_map)
+    # x_bar = np.mean(wt_prob_map)
+    # var_x = np.var(wt_prob_map)
+    # cov_x_y = np.cov(wt_prob_map.flatten(), nec_prob_map.flatten())[0, 1]
+    # n = wt_prob_map.size
+    # var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+
+    # r and std
+    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
+                                                                                          tensor_wt_prob_map)
+    r_naive, r_1_ord_corr, r_2_ord_corr = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y,
+                                                     n)
+    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+    sigma_r = var_r ** 0.5
+    # 1d_kde
+    epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
+    # debug
+    ce_left = y_bar / x_bar - max(y_bar - epsilon_y,0) / (x_bar + epsilon_x) # extreme-case: move to 0
+    ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x,0) - y_bar / x_bar # move to 1
+    # overall-range
+    l_range = ce_left + sigma_r  # CE_left + σ
+    r_range = ce_right + sigma_r  # CE_right + σ    # range__ce+1std = ce_left + ce_right + 2*sigma_r
+    # return r_naive,r_1_ord_corr,r_2_ord_corr,ce_left,ce_right, sigma_r
+    return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left.item(), ce_right.item(), sigma_r.item()
+
+def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png', sigma="", name_list=[]):
+    # xtick_labels
+    case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in name_list]# "..."->"BraTS2021_00753.nii.gz"-> "00753"
+
+    x = np.arange(len(r_gt))  # 根据 r_gt 的长度生成 x
+    fig, ax = plt.subplots(figsize=(10, 5))
+    dist = 0.1
+    # overall-bar: r_naive, r_second
+    r_est_array = np.full_like(x, r_est_naive, dtype=float) # extend dim
+    ax.errorbar(
+        x - dist,
+        r_est_array,  # extend
+        yerr=[r_est_array - bound_naive[:, 0], bound_naive[:, 1] - r_est_array],
+        fmt='o',
+        color='green',
+        capsize=4,
+        capthick=2,
+        linewidth=1.5,
+        zorder=3,
+        label=r'$r$'
+    )
+    r_est_array = np.full_like(x, r_est_second, dtype=float) # extend dim
+    ax.errorbar(
+        x + dist,
+        r_est_array,  # extend
+        yerr=[r_est_array - bound_second[:, 0], bound_second[:, 1] - r_est_array],
+        fmt='o',
+        color='lightgreen',
+        capsize=4,
+        capthick=2,
+        linewidth=1.5,
+        zorder=3,
+        label=r'$r_{corr,2}$'
+    )
+
+    # 绘制真实值（红色散点）
+    ax.scatter(
+        x,
+        r_gt,
+        color='red',
+        label=r'$r_{gt}$',
+        zorder=4,
+        s=50
+    )
+    # 设置 x 轴标签为 case_ids
+    ax.set_xticks(x);ax.set_xticklabels(case_ids, rotation=45, ha='center')
+    ax.set_xlabel('Volume');ax.set_ylabel('Ratio r')
+    ax.legend(loc='upper right')
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_ylim(0, 1)
+    ax.set_title(f'Ratio and Confidence Interval(±{sigma}$\sigma$)')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma="", name_list=[]):
+    # xtick_labels
+    case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in name_list]# "..."->"BraTS2021_00753.nii.gz"-> "00753"
+    x = np.arange(len(r_gt))  # 根据 r_gt 的长度生成 x
+    fig, ax = plt.subplots(figsize=(10, 5))
+    dist = 0.1
+    # 扩展 r_est 为数组（所有点相同）
+    r_est_array = np.full_like(x, r_est, dtype=float)
+    # overall-bar（用 bound）
+    ax.errorbar(
+        x - dist,
+        r_est_array,  # 使用扩展后的数组
+        yerr=[r_est_array - bound[:, 0], bound[:, 1] - r_est_array],
+        fmt='o',
+        color='green',
+        capsize=4,
+        capthick=2,
+        linewidth=1.5,
+        zorder=3,
+        label=r'$r$'
+    )
+    # ce-区间块（用 bound_ce）
+    ax.vlines(
+        x - dist,
+        bound_ce[:, 0],
+        bound_ce[:, 1],
+        color='lightgreen',
+        linewidth=8,
+        alpha=0.3,
+        zorder=1,
+        label=r'$I_{uncalib.}$'
+    )
+    # 绘制真实值（红色散点）
+    ax.scatter(
+        x,
+        r_gt,
+        color='red',
+        label=r'$r_{gt}$',
+        zorder=4,
+        s=50
+    )
+    # 设置 x 轴标签为 case_ids
+    ax.set_xticks(x);ax.set_xticklabels(case_ids, rotation=45, ha='center')
+    ax.set_xlabel('Volume');ax.set_ylabel('Ratio r')
+    ax.legend(loc='upper right')
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_ylim(0, 1)
+    ax.set_title(f'Ratio and Confidence Interval(±{sigma}$\sigma$)')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
 
-def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png'):
-    N = len(r_est_naive)
-    x = np.arange(N);plt.figure(figsize=(10, 5))
-    # avoid overlap: 0.1
-    plt.scatter(x - 0.1, r_est_naive, color='lightgreen', label='r_est_naive', zorder=3, alpha=0.8)
-    plt.scatter(x + 0.1, r_est_second, color='green', label='r_est_second', zorder=3, alpha=0.8)
-    plt.scatter(x, r_gt, color='red', label='r_gt', zorder=3)
+def plot_r_and_range_dataset(paired_samples, folder_pred, sigma="",step_size = 10):
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_est_second = paired_samples['r_second_corr']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    name_list = paired_samples['reference_file']
 
-    for i in range(N):
-        # avoid overlap: 0.1
-        plt.plot([x[i] - 0.1, x[i] - 0.1], bound_naive[i], color='lightgreen', alpha=0.6, linewidth=2, zorder=2)
-        plt.plot([x[i] + 0.1, x[i] + 0.1], bound_second[i], color='green', alpha=0.8, linewidth=2, zorder=2)
+    bound_naive = paired_samples['r_naive']['bound__ce+1std']
+    bound_second = paired_samples['r_second_corr']['bound__ce+1std']
+    for start in range(0, len(r_est_naive), step_size):
+        end = start + step_size
+        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma"), exist_ok=True) # JJ
+        save_path = os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma", f"r_and_range_{end}.png")
+        plot_r_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],bound_second[start:end], save_path, sigma, name_list[start:end])
 
-    plt.xlabel('Volume i')
-    plt.ylabel('r Value')
-    plt.legend();plt.grid(True, linestyle='--', alpha=0.5)
-    plt.title('r Values and Confidence Intervals(±$\sigma$)');plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close()
+def plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10):
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    name_list = paired_samples['reference_file']
+    bound_naive = paired_samples['r_naive']['bound__ce+1std']
+    bound_ce_naive = paired_samples['r_naive']['bound__ce']
+    for start in range(0, len(r_est_naive), step_size):
+        end = start + step_size
+        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma_sep"), exist_ok=True) # JJ
+        save_path = os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma_sep", f"ce_and_range_{end}.png")
+        plot_ce_and_range(r_est_naive[start:end], r_gt[start:end], bound_ce_naive[start:end], bound_naive[start:end],
+                          save_path, sigma, name_list[start:end])
 
-def compute_estimator(reference_file: str, prediction_file: str, probability_file: str, image_reader_writer: BaseReaderWriter,
-                    labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
-                    ignore_label: int = None) -> dict:
+def calc_statistic(tensor_nec_prob_map, tensor_wt_prob_map):
+    # mean/var
+    nec_flat, wt_flat = tensor_nec_prob_map.reshape(-1), tensor_wt_prob_map.reshape(-1)
+    n = nec_flat.numel()
+    y_bar, x_bar = torch.mean(nec_flat), torch.mean(wt_flat)
+    var_y, var_x = torch.var(nec_flat), torch.var(wt_flat)  # Using population variance to match NumPy
+    cov_x_y = torch.cov(torch.stack((wt_flat, nec_flat)))[0, 1]
+    x2_bar = torch.mean(wt_flat ** 2)
+    y2_bar = torch.mean(nec_flat ** 2)
+    cov_x_y = torch.mean((wt_flat - x_bar) * (nec_flat - y_bar))
+    cov_x2_y = torch.mean((wt_flat ** 2 - x2_bar) * (nec_flat - y_bar))
+    cov_y2_x = torch.mean((nec_flat ** 2 - y2_bar) * (wt_flat - x_bar))
+    cov_x2_x = torch.mean((wt_flat ** 2 - x2_bar) * (wt_flat - x_bar))
+    return y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n
+
+
+def estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n):
+    ## r_naive (y_bar/x_bar)
+    print("Analyzing r_naive ...")
+    r_naive = y_bar / x_bar
+    ## (appendix C)
+    print("Analyzing r_2_ord_corr ...")
+    ## r_a*, r_b*
+    r_a = cov_x_y / (x_bar * y_bar)
+    r_a_star = r_a * (1 + (1 / (n - 1)) * ((y_bar * cov_x2_y + x_bar * cov_y2_x) / (cov_x_y * x_bar * y_bar) - 4) - (
+            1 / (n - 1)) * (var_x / x_bar ** 2 + var_y / y_bar ** 2 + 2 * cov_x_y / (x_bar * y_bar)))
+    r_b = var_x / x_bar ** 2
+    r_b_star = r_b * (
+                1 + (4 / (n - 1)) * ((0.5 * cov_x2_x) / (x_bar * var_x) - 1) - (4 / (n - 1)) * (var_x / x_bar ** 2))
+    ## r_corr
+    r_1_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star))
+    r_2_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star) - (1 / n ** 2) * (
+            (cov_x2_y - 2 * x_bar * cov_x_y) / (x_bar ** 2 * y_bar) - (cov_x2_x - 2 * x_bar * var_x) / (x_bar ** 3) - (
+            3 * var_x * cov_x_y) / (x_bar ** 3 * y_bar) + (3 * var_x ** 2) / (x_bar ** 4)))
+    return r_naive, r_1_ord_corr, r_2_ord_corr
+
+
+def get_ece_kde_batch(f, y, bandwidth, p, mc_type, device):
+    # random permute -> batch -> average
+    idx = torch.randperm(f.shape[0])  # 例如 tensor([3, 1, 7, ..., 0])
+    f_shuffled, y_shuffled = f[idx, :], y[idx]
+    batch_size = int(1e4)  # enough
+    batch_ratio = []
+    for i in range(0, len(f), batch_size):
+        batch_f = f_shuffled[i:min(i + batch_size, len(f))].to(device)
+        batch_y = y_shuffled[i:min(i + batch_size, len(y))].to(device)
+        batch_ratio.append(get_ece_kde(batch_f, batch_y, bandwidth, p, mc_type, device).to("cpu").item())
+        # break # JJ
+    # 为什么torch.Size([]), torch.Size([1]), torch.Size([]), ...
+    # batch_ratio[53].shape 是[1]??
+    return torch.mean(torch.tensor(batch_ratio))
+
+
+def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
+    print(f"Analyzing ece_kde ...")
+    # 1d_kde
+    tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
+    tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
+        -1).to(torch.int64)
+    bandwidth = 0.02  # 0.001
+    device = "cuda"
+    epsilon_y = get_ece_kde_batch(tensor_nec_prob_map.to(device), tensor_nec_gt_map.to(device), bandwidth, p=1,
+                                  mc_type='canonical', device=device)  # binary: 0 vs 2
+    epsilon_x = get_ece_kde_batch(tensor_wt_prob_map.to(device), tensor_wt_gt_map.to(device), bandwidth, p=1,
+                                  mc_type='canonical', device=device)  # binary: 0 vs {1,2,3}
+    # print(f"ece_kde_y,ece_kde_x: {epsilon_y},{epsilon_x}")
+    return epsilon_y, epsilon_x
+
+
+def downsample_3d_tensor(tensor, sampling_factor=2, random_seed=None):
+    """
+    对3D张量进行多维度降采样 (带随机种子控制)
+    Args:
+        tensor: 输入张量，形状为 [D, H, W] (此处为 [155, 240, 240])
+        sampling_factor: 降采样因子 (默认2)
+        random_seed: 随机种子 (None表示不固定)
+    Returns:
+        降采样后的张量，形状为 [D//f, H//f, W//f]
+    """
+    assert len(tensor.shape) == 3, "input must be [z,h,w]"
+    D, H, W = tensor.shape
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_seed)
+        import random
+        random.seed(random_seed)
+
+    # z-slices: equal-interval
+    dim0_indices = torch.linspace(0, D - 1, D // sampling_factor, dtype=torch.long)
+    # H,W: 2-step-sampling
+    dim1_indices = torch.randint(0, H, (H // sampling_factor,)).sort().values
+    dim2_indices = torch.randint(0, W, (W // sampling_factor,)).sort().values
+    sampled_tensor = tensor[dim0_indices[:, None, None],
+    dim1_indices[None, :, None],
+    dim2_indices[None, None, :]]
+
+    return sampled_tensor
+
+def clip_to_unit_range(x):
+    """Clip the input value x to the range [0, 1] using NumPy."""
+    return np.clip(x, 0, 1)
+
+def compute_estimator(reference_file: str, prediction_file: str, probability_file: str,
+                      image_reader_writer: BaseReaderWriter,
+                      labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
+                      ignore_label: int = None) -> dict:
     # load images
-    seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file) #(1,155,240,240) within {0.0,1.0,2.0,3.0}
+    seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
     seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
     prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240) within [0,1]
     ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
@@ -177,147 +431,114 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {'r_gt':{},'r_naive':{},'r_first_corr':{},'r_second_corr':{},'iou_scores':{}}
-
-
-    "consider CE_r,bias_r"
-    # wt_prob_counter,wt_counter = 0, 0
-    # labels_or_regions = [(1,2,3), (2, 3), (2,)]
-    # for r in labels_or_regions: # [(1,2,3), (2,3), (3,)]
-    #     # per-sample: prob-ratio
-    #     prob_map, prob_counter = region_or_label_to_mask_prob_add(prob_pred, r)  # joint_prob
-    #     ## mean? no, just sum up
-    #     class_map, class_counter = region_or_label_to_mask(seg_ref, r) # joint_gt
-    #     if r == (1, 2, 3):# denominator: 1∪2∪3
-    #         wt_prob_counter = prob_counter
-    #         wt_counter = class_counter
-    #     if r == (2, 3):# 2∪3
-    #         results['ratio']['pred_CTR_naive'] = prob_counter/wt_prob_counter# ['naive_core_wt_ratio']
-    #         results['ratio']['gt_CTR'] = class_counter / wt_counter# ['gt_core_wt_ratio']
-    #     if r == (2,):# 2
-    #         results['ratio']['pred_NTR_naive'] = prob_counter/wt_prob_counter # ['naive_necrosis_wt_ratio']
-    #         results['ratio']['gt_NTR'] = class_counter / wt_counter# ['gt_necrosis_wt_ratio']
-    # return results
+    results['ratio'] = {'r_gt': {}, 'r_naive': {}, 'r_first_corr': {}, 'r_second_corr': {}, 'iou_scores': {}}
 
     "analyze mean/var"
-    labels_or_regions = [(2,), (1,2,3)]  # (2,3):core, (2,):necrosis
+    labels_or_regions = [(2,), (1, 2, 3)]  # (2,3):core, (2,):necrosis
     # gt
-    wt_gt_map, wt_gt_counter = region_or_label_to_mask(seg_ref, (1,2,3))
+    wt_gt_map, wt_gt_counter = region_or_label_to_mask(seg_ref, (1, 2, 3))
     nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, (2,))
+    # print(np.sum(slice_data== 2),np.sum(slice_data== 1)+np.sum(slice_data== 2)+np.sum(slice_data== 3))
     # pred
     wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
-    nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2, ))  # numerator
-    n = np.size( wt_prob_map)
+    nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2,))  # numerator
 
-    y_bar = np.mean(nec_prob_map)
-    var_y = np.var(nec_prob_map)
-    x_bar = np.mean(wt_prob_map)
-    var_x = np.var(wt_prob_map)
-    cov_x_y = np.cov(wt_prob_map.flatten(), nec_prob_map.flatten())[0, 1]
-    n = wt_prob_map.size
-    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
     # calib-error（epsilon_y, epsilon_x）
-    tensor_prob_pred = torch.from_numpy(prob_pred).permute(1, 2, 3, 0).reshape(-1, 4)# [4,155,240,240]--> [155*240*240,4]
-    tensor_seg_ref = torch.from_numpy(seg_ref).squeeze(0).reshape(-1).to(torch.int64)# [155,240,240] within {0,1,2,3} -->[155*240*240]
-    tensor_nec_prob_map = torch.from_numpy(nec_prob_map.reshape(-1))
-    tensor_wt_prob_map = torch.from_numpy(wt_prob_map.reshape(-1))
-    tensor_nec_gt_map = torch.from_numpy(nec_gt_map.reshape(-1)).to(torch.int64)
-    tensor_wt_gt_map = torch.from_numpy(wt_gt_map.reshape(-1)).to(torch.int64)
-
-    # Mar.20
-    ## construct binary-classifier for {2} and {1,2,3}
-    binary_prob_nec_others = torch.stack((1 - tensor_nec_prob_map, tensor_nec_prob_map), dim=1)# prob_others, prob_nec
-    binary_prob_wt_others = torch.stack((1 - tensor_wt_prob_map, tensor_wt_prob_map), dim=1)# prob_others, prob_wt
-    # dirichlet for [N,2]
-    epsilon_y_cano = get_ece_kde_batch(binary_prob_nec_others, tensor_nec_gt_map, bandwidth=0.001, p=1,
-                                       mc_type='canonical',device='cpu')  # binary: 0 vs 2
-    epsilon_x_cano = get_ece_kde_batch(binary_prob_wt_others, tensor_wt_gt_map, bandwidth=0.001, p=1,
-                                       mc_type='canonical',device='cpu')  # binary: 0 vs {1,2,3}
-    print(f"ece_kde_y,ece_kde_x: {epsilon_y_cano},{epsilon_x_cano}")
-
-    epsilon_x, epsilon_y = epsilon_x_cano, epsilon_y_cano # cano_kde
-    sigma_r = np.sqrt(var_r)
-    ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x)
-    ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
-    l_range = ce_left + sigma_r  # CE_left + σ
-    r_range = ce_right + sigma_r  # CE_right + σ
-    # range__ce+1std = ce_left + ce_right + 2*sigma_r
-    #####################################
-    ## r_naive (y_bar/x_bar)
-    print("Analyzing r_naive ...")
-    r_naive = y_bar / x_bar
-    ## (appendix C)
-    print("Analyzing r_2_ord_corr ...")
-    x2_bar = np.mean(wt_prob_map ** 2)
-    y2_bar = np.mean(nec_prob_map ** 2)
-    cov_x_y = np.mean((wt_prob_map - x_bar) * (nec_prob_map - y_bar))
-    cov_x2_y = np.mean((wt_prob_map ** 2 - x2_bar) * (nec_prob_map - y_bar))
-    cov_y2_x = np.mean((nec_prob_map ** 2 - y2_bar) * (wt_prob_map - x_bar))
-    cov_x2_x = np.mean((wt_prob_map ** 2 - x2_bar) * (wt_prob_map - x_bar))
-    ## r_a*, r_b*
-    r_a = cov_x_y / (x_bar * y_bar)
-    r_a_star = r_a * (1 + (1 / (n - 1)) * ((y_bar * cov_x2_y + x_bar * cov_y2_x) / (cov_x_y * x_bar * y_bar) - 4) - (
-                1 / (n - 1)) * (var_x / x_bar ** 2 + var_y / y_bar ** 2 + 2 * cov_x_y / (x_bar * y_bar)))
-    r_b = var_x / x_bar ** 2
-    r_b_star = r_b * (1 + (4 / (n - 1)) * ((0.5 * cov_x2_x) / (x_bar * var_x) - 1) - (4 / (n - 1)) * (var_x / x_bar ** 2))
-    ## r_1_ord_corr
-    r_1_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star)
-    ## r_2_ord_corr
-    r_2_ord_corr = r_naive * (1 - (1 / n) * (r_b_star - r_a_star) - (1 / n ** 2) * (
-                (cov_x2_y - 2 * x_bar * cov_x_y) / (x_bar ** 2 * y_bar) - (cov_x2_x - 2 * x_bar * var_x) / (x_bar ** 3) - (
-                    3 * var_x * cov_x_y) / (x_bar ** 3 * y_bar) + (3 * var_x ** 2) / (x_bar ** 4)))
-    ## Mar.19
+    # tensor_prob_pred = torch.from_numpy(prob_pred).permute(1, 2, 3, 0).reshape(-1, 4)# [4,155,240,240]--> [155*240*240,4]
+    # tensor_seg_ref = torch.from_numpy(seg_ref).squeeze(0).reshape(-1).to(torch.int64)# [155,240,240] within {0,1,2,3} -->[155*240*240]
+    tensor_nec_prob_map = torch.from_numpy(nec_prob_map)  # [155,240,240]
+    tensor_wt_prob_map = torch.from_numpy(wt_prob_map)
+    tensor_nec_gt_map = torch.from_numpy(nec_gt_map).squeeze(0)
+    tensor_wt_gt_map = torch.from_numpy(wt_gt_map).squeeze(0)
+    ################################
+    # ## downsample + scattor
+    # seeds = [10,20,30,40,50]
+    # sampling_factor = 2
+    # for seed in seeds:
+    #     # downsample: no change distr
+    #     downsampled_nec_prob_map = downsample_3d_tensor(tensor_nec_prob_map, sampling_factor, seed)# [155,240,240]->[77,120,120]
+    #     downsampled_wt_prob_map = downsample_3d_tensor(tensor_wt_prob_map, sampling_factor, seed)
+    #     # downsampled_nec_gt_map = downsample_3d_tensor(tensor_nec_gt_map, sampling_factor, seed)
+    #     # downsampled_wt_gt_map = downsample_3d_tensor(tensor_wt_gt_map, sampling_factor, seed)
+    #     # calc r
+    #
+    #     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(downsampled_nec_prob_map,downsampled_wt_prob_map)
+    #     down_r_naive, down_r_1_ord_corr, down_r_2_ord_corr = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n)
+    #     # Todo: save 5 scattor -> plot
+    #
+    ################################
     "reformulate r to see how interval(x,y) changes"
-    x0, y0 = r_naive-(ce_left + sigma_r), r_naive+(ce_right + sigma_r) # naive_r
-    x1, y1 = r_1_ord_corr-(ce_left + sigma_r), r_1_ord_corr+(ce_right + sigma_r) # 1_order_corr_r
-    x2, y2 = r_2_ord_corr-(ce_left + sigma_r), r_2_ord_corr+(ce_right + sigma_r) # 2_order_corr_r
+    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
+                                                                                          tensor_wt_prob_map)
+    r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, sigma_r = analyze_r_ce_std(tensor_nec_prob_map,
+                                                                                       tensor_wt_prob_map,
+                                                                                       tensor_nec_gt_map,
+                                                                                       tensor_wt_gt_map)
+    # a prior is: r>0, which is appicable for confidence range
+    # CE_range
+    x0_ce, y0_ce = clip_to_unit_range(r_naive - ce_left), clip_to_unit_range(r_naive + ce_right)
+    x1_ce, y1_ce = clip_to_unit_range(r_1_ord_corr - ce_left), clip_to_unit_range(r_1_ord_corr + ce_right)
+    x2_ce, y2_ce = clip_to_unit_range(r_2_ord_corr - ce_left), clip_to_unit_range(r_2_ord_corr + ce_right)
+    # CE+sigma_range
+    x0, y0 = clip_to_unit_range(x0_ce - sigma_r), clip_to_unit_range(y0_ce + sigma_r)  # naive_r, 1std
+    x1, y1 = clip_to_unit_range(x1_ce - sigma_r,), clip_to_unit_range(y1_ce + sigma_r)  # 1_order_corr_r
+    x2, y2 = clip_to_unit_range(x2_ce - sigma_r,), clip_to_unit_range(y2_ce + sigma_r)  # 2_order_corr_r
+    x0_2sigma, y0_2sigma = clip_to_unit_range(x0-sigma_r), clip_to_unit_range(y0+ sigma_r)
+    x1_2sigma, y1_2sigma = clip_to_unit_range(x1-sigma_r), clip_to_unit_range(y1+ sigma_r)
+    x2_2sigma, y2_2sigma = clip_to_unit_range(x2-sigma_r), clip_to_unit_range(y2+ sigma_r)
+    x0_3sigma, y0_3sigma = clip_to_unit_range(x0-2*sigma_r), clip_to_unit_range(y0+ 2*sigma_r)  # naive_r, 3std
+    x1_3sigma, y1_3sigma = clip_to_unit_range(x1-2*sigma_r), clip_to_unit_range(y1+ 2*sigma_r)
+    x2_3sigma, y2_3sigma = clip_to_unit_range(x2-2*sigma_r), clip_to_unit_range(y2+ 2*sigma_r)
     #####################################
     # gt
-    r_gt = nec_gt_counter/wt_gt_counter
+    r_gt = nec_gt_counter / wt_gt_counter
     results['ratio']['r_gt']['r_gt'] = r_gt
+    results['ratio']['r_gt']['sigma_r'] = sigma_r
     ## naive
     results['ratio']['r_naive']['r_est'] = r_naive
     # [x,y]
-    results['ratio']['r_naive']['bound__ce+1std'] = np.array([x0,y0])
-    results['ratio']['r_naive']['bound__ce+2std'] = np.array([x0-sigma_r,y0+sigma_r])
-    results['ratio']['r_naive']['bound__ce+3std'] = np.array([x0-2*sigma_r,y0+2*sigma_r])
+    results['ratio']['r_naive']['bound__ce'] = np.array([x0_ce, y0_ce])
+    results['ratio']['r_naive']['bound__ce+1std'] = np.array([x0, y0])
+    results['ratio']['r_naive']['bound__ce+2std'] = np.array([x0_2sigma, y0_2sigma])
+    results['ratio']['r_naive']['bound__ce+3std'] = np.array([x0_3sigma, y0_3sigma])
     # scalar
-    results['ratio']['r_naive']['range__ce+1std'] = (y0-x0).item()
-    results['ratio']['r_naive']['range__ce+2std'] = (y0-x0+2*sigma_r).item()
-    results['ratio']['r_naive']['range__ce+3std'] = (y0-x0+4*sigma_r).item()
+    results['ratio']['r_naive']['range__ce+1std'] = y0 - x0
+    results['ratio']['r_naive']['range__ce+2std'] = y0_2sigma-x0_2sigma
+    results['ratio']['r_naive']['range__ce+3std'] = y0_3sigma-x0_3sigma
     ## 1.order
     results['ratio']['r_first_corr']['r_est'] = r_1_ord_corr
-    results['ratio']['r_first_corr']['bound__ce+1std'] = np.array([x1,y1])
-    results['ratio']['r_first_corr']['bound__ce+2std'] = np.array([x1-sigma_r,y1+sigma_r])
-    results['ratio']['r_first_corr']['bound__ce+3std'] = np.array([x1-2*sigma_r,y1+2*sigma_r])
-    results['ratio']['r_first_corr']['range__ce+1std'] = (y1-x1).item()
-    results['ratio']['r_first_corr']['range__ce+2std'] = (y1-x1+2*sigma_r).item()
-    results['ratio']['r_first_corr']['range__ce+3std'] = (y1-x1+4*sigma_r).item()
+    results['ratio']['r_first_corr']['bound__ce'] = np.array([x1_ce, y1_ce])
+    results['ratio']['r_first_corr']['bound__ce+1std'] = np.array([x1, y1])
+    results['ratio']['r_first_corr']['bound__ce+2std'] = np.array([x1_2sigma, y1_2sigma])
+    results['ratio']['r_first_corr']['bound__ce+3std'] = np.array([x1_3sigma, y1_3sigma])
+    results['ratio']['r_first_corr']['range__ce+1std'] = y1 - x1
+    results['ratio']['r_first_corr']['range__ce+2std'] = y1_2sigma-x1_2sigma
+    results['ratio']['r_first_corr']['range__ce+3std'] = y1_3sigma-x1_3sigma
     ## 2.order
     results['ratio']['r_second_corr']['r_est'] = r_2_ord_corr
-    results['ratio']['r_second_corr']['bound__ce+1std'] = np.array([x2,y2])
-    results['ratio']['r_second_corr']['bound__ce+2std'] = np.array([x2-sigma_r,y2+sigma_r])
-    results['ratio']['r_second_corr']['bound__ce+3std'] = np.array([x2-2*sigma_r,y2+2*sigma_r])
-    results['ratio']['r_second_corr']['range__ce+1std'] = (y2-x2).item()
-    results['ratio']['r_second_corr']['range__ce+2std'] = (y2-x2+2*sigma_r).item()
-    results['ratio']['r_second_corr']['range__ce+3std'] = (y2-x2+4*sigma_r).item()
+    results['ratio']['r_second_corr']['bound__ce'] = np.array([x2_ce, y2_ce])
+    results['ratio']['r_second_corr']['bound__ce+1std'] = np.array([x2, y2])
+    results['ratio']['r_second_corr']['bound__ce+2std'] = np.array([x2_2sigma, y2_2sigma])
+    results['ratio']['r_second_corr']['bound__ce+3std'] = np.array([x2_3sigma, y2_3sigma])
+    results['ratio']['r_second_corr']['range__ce+1std'] = y2 - x2
+    results['ratio']['r_second_corr']['range__ce+2std'] = y2_2sigma-x2_2sigma
+    results['ratio']['r_second_corr']['range__ce+3std'] = y2_3sigma-x2_3sigma
     # Jaccard(r_naive,r_corr)
     naive_second_1 = jaccard_segment(x0, y0, x2, y2)
-    naive_second_2 = jaccard_segment(x0-sigma_r, y0+sigma_r, x2-sigma_r, y2+sigma_r)
-    naive_second_3 = jaccard_segment(x0-2*sigma_r, y0+2*sigma_r, x2-2*sigma_r, y2+2*sigma_r)
-    # iou_scores_0_1 = jaccard_segment(x0, y0, x1, y1) # iou_scores_1_2 = jaccard_segment(x1, y1, x2, y2)
-    results['ratio']['iou_scores']['naive_vs_second__ce+123std'] = np.array([naive_second_1,naive_second_2,naive_second_3])
+    naive_second_2 = jaccard_segment(x0_2sigma, y0_2sigma, x2_2sigma, y2_2sigma)
+    naive_second_3 = jaccard_segment(x0_3sigma, y0_3sigma, x2_3sigma, y2_3sigma)
+    results['ratio']['iou_scores']['naive_vs_second__ce+123std'] = np.array(
+        [naive_second_1, naive_second_2, naive_second_3])
     return results
-
 
 
 def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: str,
                                 image_reader_writer: BaseReaderWriter,
                                 file_ending: str,
-                              regions_or_labels: Union[List[int], List[Union[int, Tuple[int, ...]]]],
-                              ignore_label: int = None,
-                              num_processes: int = default_num_processes,
-                              chill: bool = True) -> dict:
+                                regions_or_labels: Union[List[int], List[Union[int, Tuple[int, ...]]]],
+                                ignore_label: int = None,
+                                num_processes: int = default_num_processes,
+                                chill: bool = True) -> dict:
     """
     output_file must end with .json; can be None
     """
@@ -331,7 +552,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         assert all(present), "Not all files in folder_ref exist in folder_pred"
     files_ref = [join(folder_ref, i) for i in files_pred]
     files_pred = [join(folder_pred, i) for i in files_pred]
-    files_prob = [join(folder_pred, i.replace("nii.gz","npz")) for i in files_pred]
+    files_prob = [join(folder_pred, i.replace("nii.gz", "npz")) for i in files_pred]
     # with multiprocessing.get_context("spawn").Pool(num_processes) as pool:
     #     # for i in list(zip(files_ref, files_pred, [image_reader_writer] * len(files_pred), [regions_or_labels] * len(files_pred), [ignore_label] * len(files_pred))):
     #     #     compute_metrics(*i)
@@ -342,7 +563,12 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     #     )
 
     results = []
+    # i =0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
+        # i += 1
+        # if i> 230 or i<220: continue  # JJ: first two samples
+        # if (ref!="/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0/BraTS2021_01240.nii.gz"
+        #         and ref!="/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0/BraTS2021_00753.nii.gz"): continue
         # result = compute_metrics(ref, pred, image_reader_writer, regions_or_labels, ignore_label) # also do
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label)
         results.append(result)
@@ -350,49 +576,76 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     ## Jaccard: overlap metrics
     paired_samples = {}
     mean_r_jaccard = {}
-    scores = ['naive_vs_second__ce+123std',] # scores = ['naive_vs_first_123std','first_vs_second_123std']
+    scores = ['naive_vs_second__ce+123std', ]  # scores = ['naive_vs_first_123std','first_vs_second_123std']
     for r in scores:  # re-arrange
         paired_samples[r] = {}
         paired_samples[r]['iou_scores'] = np.array([item['ratio']['iou_scores'][r] for item in results])
-        mean_r_jaccard[r] = np.mean(paired_samples[r]['iou_scores'],axis=0)
+        mean_r_jaccard[r] = np.mean(paired_samples[r]['iou_scores'], axis=0)
 
-    ## Range: as narrow as possible
+    ################################################
+    ## Range: as narrow as possible ##
     mean_r_range = {}
-    scores = ['r_naive','r_first_corr','r_second_corr']
+    # 1.
+    scores = ['r_naive', 'r_first_corr', 'r_second_corr']
     for r in scores:
         paired_samples[r] = {}
-        paired_samples[r]['bound__ce+1std'] = np.array([item['ratio'][r]['bound__ce+1std'] for item in results]) # [N,2]
+        paired_samples[r]['bound__ce'] = np.array([item['ratio'][r]['bound__ce'] for item in results])  # [N,2]
+        paired_samples[r]['bound__ce+1std'] = np.array(
+            [item['ratio'][r]['bound__ce+1std'] for item in results])  # [N,2]
         paired_samples[r]['bound__ce+2std'] = np.array([item['ratio'][r]['bound__ce+2std'] for item in results])
         paired_samples[r]['bound__ce+3std'] = np.array([item['ratio'][r]['bound__ce+3std'] for item in results])
-        paired_samples[r]['range__ce+1std'] = np.array([item['ratio'][r]['range__ce+1std'] for item in results]) # [N,]
+        paired_samples[r]['range__ce+1std'] = np.array([item['ratio'][r]['range__ce+1std'] for item in results])  # [N,]
         paired_samples[r]['range__ce+2std'] = np.array([item['ratio'][r]['range__ce+2std'] for item in results])
         paired_samples[r]['range__ce+3std'] = np.array([item['ratio'][r]['range__ce+3std'] for item in results])
-        paired_samples[r]['r_est'] = np.array([item['ratio'][r]['r_est'] for item in results])# [N,]
-        r_range_123 = np.stack((paired_samples[r]['range__ce+1std'],paired_samples[r]['range__ce+2std'],paired_samples[r]['range__ce+3std']),axis=1)
-        mean_r_range[r] = np.mean(r_range_123,axis=0)
-
+        # paired_samples[r]['sigma_r'] = results['ratio']['r_gt']['sigma_r']
+        paired_samples[r]['r_est'] = np.array([item['ratio'][r]['r_est'] for item in results])  # [N,]
+        r_range_123 = np.stack((paired_samples[r]['range__ce+1std'], paired_samples[r]['range__ce+2std'],
+                                paired_samples[r]['range__ce+3std']), axis=1)
+        mean_r_range[r] = np.mean(r_range_123, axis=0)
+    # 2.
     paired_samples['r_gt'] = {}
     paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
+    # 3.
+    # results['reference_file'] = reference_file
+    paired_samples['reference_file'] = np.array([item['reference_file'] for item in results])  # [N,]
+
     # write into json
     [recursive_fix_for_json_export(i) for i in results]
     recursive_fix_for_json_export(mean_r_jaccard)
     recursive_fix_for_json_export(mean_r_range)
-    result = {'mean_r_jaccard__ce+123std': mean_r_jaccard,'mean_r_range__ce+123std':mean_r_range,'ratio_per_case': results}
+    result = {'mean_r_jaccard__ce+123std': mean_r_jaccard, 'mean_r_range__ce+123std': mean_r_range,
+              'ratio_per_case': results}
     if output_file is not None:
         save_summary_json(result, output_file)
 
-    # plot the range ~ce+1std
-    bound_naive = paired_samples['r_naive']['bound__ce+1std']
-    bound_second = paired_samples['r_second_corr']['bound__ce+1std']
-    r_est_naive = paired_samples['r_naive']['r_est']
-    r_est_second = paired_samples['r_second_corr']['r_est']
+
+    # fail_case: outside the range
+    fail_case = []
     r_gt = paired_samples['r_gt']['r_gt']
-    # only plot 10 volumes
-    plot_r_and_range(r_est_naive[:10], r_est_second[:10], r_gt[:10], bound_naive[:10,:], bound_second[:10,:], "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range_ten.png")
-    plot_r_and_range(r_est_naive[10:20], r_est_second[10:20], r_gt[10:20], bound_naive[10:20, :], bound_second[10:20, :],
-                     "/lustre1/project/stg_00081/jli/calibration/nnUNet/r_and_range_twenty.png")
-    # visualize volume: uncertainty map
-    # JJ
+    lower_std, upper_std = paired_samples['r_naive']['bound__ce+1std'][:, 0], paired_samples['r_naive']['bound__ce+1std'][:, 1]
+    mask = (r_gt < lower_std) | (r_gt > upper_std)
+    case_ids = np.array([os.path.basename(name).split('_')[-1].split('.')[0] for name in paired_samples['reference_file']])
+
+    # write into plot.json
+    result = {'r_gt': paired_samples['r_gt'], 'r_naive': paired_samples['r_naive'],
+              'r_first_corr': paired_samples['r_first_corr'], 'r_second_corr': paired_samples['r_second_corr']}
+    result_as_list = {
+        key: {subkey: value.tolist() if isinstance(value, np.ndarray) else value for subkey, value in value.items()} for
+        key, value in result.items()}
+    result_as_list['failure'] = case_ids[mask].tolist()# 'failure': case_ids[mask]
+    save_json(result_as_list, 'plot.json', sort_keys=False) # JJ
+    ################################################
+    # # "val_interval": r, r_corr
+    plot_r_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10)
+    plot_r_and_range_dataset(paired_samples, folder_pred, sigma=3, step_size=10)
+    plot_r_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=15)
+    plot_r_and_range_dataset(paired_samples, folder_pred, sigma=3, step_size=15)
+    # "val_interval_sep": ce, ce+sigma
+    plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10)
+    plot_ce_and_range_dataset(paired_samples, folder_pred, sigma=3, step_size=10)
+    plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=15)
+    plot_ce_and_range_dataset(paired_samples, folder_pred, sigma=3, step_size=15)
+    ################################################
     return result
 
 
@@ -401,7 +654,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                num_processes: int = default_num_processes,
                                chill: bool = False):
     dataset_json = load_json(dataset_json_file)
-    file_ending = dataset_json['file_ending'] #.nii.gz for segs
+    file_ending = dataset_json['file_ending']  # .nii.gz for segs
     # file_ending = ".npz" #.npz for probs
 
     # get reader writer class
@@ -414,8 +667,8 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
     compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
-                              lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
-                              num_processes, chill=chill)
+                                lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
+                                num_processes, chill=chill)
 
 
 def compute_metrics_on_folder_simple(folder_ref: str, folder_pred: str, labels: Union[Tuple[int, ...], List[int]],
@@ -447,9 +700,11 @@ def evaluate_folder_entry_point():
                         help='Output file. Optional. Default: pred_folder/summary.json')
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
-    parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--chill', action='store_true',
+                        help='dont crash if folder_pred does not have all files that are present in folder_gt')
     args = parser.parse_args()
-    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np, chill=args.chill)
+    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
+                               chill=args.chill)
 
 
 def evaluate_simple_entry_point():
@@ -465,10 +720,12 @@ def evaluate_simple_entry_point():
                         help='Output file. Optional. Default: pred_folder/summary.json')
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
-    parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--chill', action='store_true',
+                        help='dont crash if folder_pred does not have all files that are present in folder_gt')
 
     args = parser.parse_args()
-    compute_metrics_on_folder_simple(args.gt_folder, args.pred_folder, args.l, args.o, args.np, args.il, chill=args.chill)
+    compute_metrics_on_folder_simple(args.gt_folder, args.pred_folder, args.l, args.o, args.np, args.il,
+                                     chill=args.chill)
 
 
 if __name__ == '__main__':
@@ -480,5 +737,6 @@ if __name__ == '__main__':
     regions = labels_to_list_of_regions([1, 2])
     ignore_label = None
     num_processes = 12
-    compute_metrics_on_folder(folder_ref, folder_pred, output_file, image_reader_writer, file_ending, regions, ignore_label,
+    compute_metrics_on_folder(folder_ref, folder_pred, output_file, image_reader_writer, file_ending, regions,
+                              ignore_label,
                               num_processes)

@@ -67,7 +67,7 @@ from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
 from nnunetv2.utilities.helpers import empty_cache, dummy_context
 from nnunetv2.utilities.label_handling.label_handling import convert_labelmap_to_one_hot, determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
-from nnunetv2.evaluation.ece_kde import get_ece_kde, get_ece_kde_batch
+from nnunetv2.evaluation.ece_kde import get_ece_kde
 
 
 class nnUNetTrainer(object):
@@ -1005,99 +1005,7 @@ class nnUNetTrainer(object):
         # lrs are the same for all workers so we don't need to gather them in case of DDP training
         self.logger.log('lrs', self.optimizer.param_groups[0]['lr'], self.current_epoch)
 
-    def train_step(self, batch: dict, epoch: int, start_epoch: int) -> dict:
-        data = batch['data']
-        target = batch['target']
-
-        data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
-        else:
-            target = target.to(self.device, non_blocking=True)
-
-        self.optimizer.zero_grad(set_to_none=True)
-        # Autocast can be annoying
-        # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
-        # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
-        # So autocast will only be active if we have a cuda device.
-        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
-            l = self.loss(output, target)  # target only includes True/False
-            print(f"seg_loss {l}")
-            # print(output)
-            # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
-            # for label-based: replace 3 with 4 ->label 0,1,2,3
-            # output is after softmax, should be propobablity[]
-            #####################
-            # f = torch.rand((2000, 3));f = f / torch.sum(f, dim=1).unsqueeze(-1)
-            # y = torch.randint(0, 3, (2000,))
-            # ce_batch = get_ece_kde_batch(f, y, bandwidth=0.02, p=1, mc_type='canonical', device='cpu')
-            # ce = get_ece_kde(f, y, bandwidth=0.02, p=1, mc_type='canonical', device='cpu')
-            #####################
-            softmax_output = [torch.softmax(feat, dim=1) for feat in output]
-            if epoch>=start_epoch:
-                "Calib-bound(dirich): epsilon_x, epsilon_y ~r"
-                # 5 scales or only full-resl?
-                for scale in range(len(softmax_output)):  # necrosis: 2, wt: 1,2,3
-                    import pdb;pdb.set_trace()
-                    tensor_nec_prob_map = softmax_output[scale][:, 2, :, :].reshape(-1,1)
-                    tensor_wt_prob_map = (softmax_output[scale][:, 1, :, :] + softmax_output[scale][:, 2, :, :] + softmax_output[scale][:, 3, :,:]).reshape(-1,1)
-                    tensor_nec_gt_map = torch.where(target[scale] == 2, 1, 0).reshape(-1)  # {2} as 1, others as 0
-                    tensor_wt_gt_map = torch.clamp(target[scale], max=1).reshape(-1).to(torch.int64)  # {1,2,3} as 1
-                    "1) var_r"
-                    y_bar = torch.mean(tensor_nec_prob_map)
-                    var_y = torch.var(tensor_nec_prob_map)
-                    x_bar = torch.mean(tensor_wt_prob_map)
-                    var_x = torch.var(tensor_wt_prob_map)
-                    cov_x_y = torch.cov(torch.stack((tensor_wt_prob_map.squeeze(-1), tensor_nec_prob_map.squeeze(-1))))[0, 1]
-                    n = tensor_wt_prob_map.shape[0]
-                    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
-                    sigma_r = torch.sqrt(var_r)
-                    "2) cali_r"
-                    ## choice-0: cano_y and cano_x
-                    # should construct binary_prob[N,2] for: 2_vs_others, 123_vs_others? -> dirichlet for [N,2]
-                    # preprocess: construct [N,2]
-                    # binary_prob_nec_others = torch.stack((1 - tensor_nec_prob_map, tensor_nec_prob_map),
-                    #                                      dim=1)  # prob_others, prob_nec
-                    # binary_prob_wt_others = torch.stack((1 - tensor_wt_prob_map, tensor_wt_prob_map), dim=1)
-                    # binary_prob_wt_others = torch.clamp(binary_prob_wt_others, min=0, max=1)  # avoid neg value
-                    ## choice-1: binary
-                    epsilon_y = get_ece_kde_batch(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth=0.02, p=1,
-                                                  mc_type='canonical', device=self.device)  # binary: {2} vs {0,1,3}  # inf????
-                    epsilon_x = get_ece_kde_batch(tensor_wt_prob_map, tensor_wt_gt_map, bandwidth=0.02, p=1,
-                                                  mc_type='canonical', device=self.device)  # binary: {1,2,3} vs {0}
-                    ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x) # nan????
-                    ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
-                    ## choice-2: class_y, class_x
-                    # ...
-                    "3) range"
-                    l_range = ce_left + sigma_r  # CE_left + σ
-                    r_range = ce_right + sigma_r  # CE_right + σ
-                    if scale == 0:
-                        ce_var_range = l_range + r_range
-                    else:
-                        ce_var_range = ce_var_range + l_range + r_range
-                    import pdb;pdb.set_trace()
-                    print(f"scale {scale} range {ce_var_range}")
-                    # break # avoid killed
-                    # JJ: or just calc the full-resol
-                #####################
-                lambda_range = 0.1
-                l = l + lambda_range * ce_var_range
-
-        if self.grad_scaler is not None:
-            self.grad_scaler.scale(l).backward()
-            self.grad_scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
-            self.grad_scaler.step(self.optimizer)
-            self.grad_scaler.update()
-        else:
-            l.backward()
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
-            self.optimizer.step()
-        return {'loss': l.detach().cpu().numpy()}
-
-    # def train_step(self, batch: dict) -> dict:
+    # def train_step(self, batch: dict, epoch: int, start_epoch: int) -> dict:
     #     data = batch['data']
     #     target = batch['target']
     #
@@ -1114,10 +1022,63 @@ class nnUNetTrainer(object):
     #     # So autocast will only be active if we have a cuda device.
     #     with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
     #         output = self.network(data)
+    #         l = self.loss(output, target)  # target only includes True/False
+    #         # print(f"seg_loss {l}")
     #         # print(output)
     #         # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
     #         # for label-based: replace 3 with 4 ->label 0,1,2,3
-    #         l = self.loss(output, target)# target only includes True/False
+    #         # output is after softmax, should be propobablity[]
+    #         #####################
+    #         softmax_output = [torch.softmax(feat, dim=1) for feat in output]
+    #         if epoch>=start_epoch:
+    #             "Calib-bound(dirich): epsilon_x, epsilon_y ~r"
+    #             # 5 scales or only full-resl?
+    #             for scale in range(len(softmax_output)):  # necrosis: 2, wt: 1,2,3
+    #                 import pdb;pdb.set_trace()
+    #                 tensor_nec_prob_map = softmax_output[scale][:, 2, :, :].reshape(-1,1)
+    #                 tensor_wt_prob_map = (softmax_output[scale][:, 1, :, :] + softmax_output[scale][:, 2, :, :] + softmax_output[scale][:, 3, :,:]).reshape(-1,1)
+    #                 tensor_nec_gt_map = torch.where(target[scale] == 2, 1, 0).reshape(-1)  # {2} as 1, others as 0
+    #                 tensor_wt_gt_map = torch.clamp(target[scale], max=1).reshape(-1).to(torch.int64)  # {1,2,3} as 1
+    #                 "1) var_r"
+    #                 y_bar = torch.mean(tensor_nec_prob_map)
+    #                 var_y = torch.var(tensor_nec_prob_map)
+    #                 x_bar = torch.mean(tensor_wt_prob_map)
+    #                 var_x = torch.var(tensor_wt_prob_map)
+    #                 cov_x_y = torch.cov(torch.stack((tensor_wt_prob_map.squeeze(-1), tensor_nec_prob_map.squeeze(-1))))[0, 1]
+    #                 n = tensor_wt_prob_map.shape[0]
+    #                 var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+    #                 sigma_r = torch.sqrt(var_r)
+    #                 "2) cali_r"
+    #                 ## choice-0: cano_y and cano_x
+    #                 # should construct binary_prob[N,2] for: 2_vs_others, 123_vs_others? -> dirichlet for [N,2]
+    #                 # preprocess: construct [N,2]
+    #                 # binary_prob_nec_others = torch.stack((1 - tensor_nec_prob_map, tensor_nec_prob_map),
+    #                 #                                      dim=1)  # prob_others, prob_nec
+    #                 # binary_prob_wt_others = torch.stack((1 - tensor_wt_prob_map, tensor_wt_prob_map), dim=1)
+    #                 # binary_prob_wt_others = torch.clamp(binary_prob_wt_others, min=0, max=1)  # avoid neg value
+    #                 ## choice-1: binary
+    #                 epsilon_y = get_ece_kde_batch(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth=0.02, p=1,
+    #                                               mc_type='canonical', device=self.device)  # binary: {2} vs {0,1,3}  # inf????
+    #                 epsilon_x = get_ece_kde_batch(tensor_wt_prob_map, tensor_wt_gt_map, bandwidth=0.02, p=1,
+    #                                               mc_type='canonical', device=self.device)  # binary: {1,2,3} vs {0}
+    #                 ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x) # nan????
+    #                 ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
+    #                 ## choice-2: class_y, class_x
+    #                 # ...
+    #                 "3) range"
+    #                 l_range = ce_left + sigma_r  # CE_left + σ
+    #                 r_range = ce_right + sigma_r  # CE_right + σ
+    #                 if scale == 0:
+    #                     ce_var_range = l_range + r_range
+    #                 else:
+    #                     ce_var_range = ce_var_range + l_range + r_range
+    #                 import pdb;pdb.set_trace()
+    #                 print(f"scale {scale} range {ce_var_range}")
+    #                 # break # avoid killed
+    #                 # JJ: or just calc the full-resol
+    #             #####################
+    #             lambda_range = 0.1
+    #             l = l + lambda_range * ce_var_range
     #
     #     if self.grad_scaler is not None:
     #         self.grad_scaler.scale(l).backward()
@@ -1130,6 +1091,40 @@ class nnUNetTrainer(object):
     #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
     #         self.optimizer.step()
     #     return {'loss': l.detach().cpu().numpy()}
+
+    def train_step(self, batch: dict) -> dict:
+        data = batch['data']
+        target = batch['target']
+
+        data = data.to(self.device, non_blocking=True)
+        if isinstance(target, list):
+            target = [i.to(self.device, non_blocking=True) for i in target]
+        else:
+            target = target.to(self.device, non_blocking=True)
+
+        self.optimizer.zero_grad(set_to_none=True)
+        # Autocast can be annoying
+        # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
+        # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
+        # So autocast will only be active if we have a cuda device.
+        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+            output = self.network(data)
+            # print(output)
+            # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
+            # for label-based: replace 3 with 4 ->label 0,1,2,3
+            l = self.loss(output, target)# target only includes True/False
+
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(l).backward()
+            self.grad_scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            l.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.optimizer.step()
+        return {'loss': l.detach().cpu().numpy()}
 
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
@@ -1498,15 +1493,13 @@ class nnUNetTrainer(object):
         self.on_train_start()
 
         for epoch in range(self.current_epoch, self.num_epochs):
-            print(f"at epoch {epoch}")
             self.on_epoch_start()
 
             self.on_train_epoch_start()
             train_outputs = []
-            start_epoch = 0 # ToDo
 
             for batch_id in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train), epoch, start_epoch))
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
 
             self.on_train_epoch_end(train_outputs)
 

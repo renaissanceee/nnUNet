@@ -1,4 +1,3 @@
-
 import torch
 from torch import nn
 
@@ -18,7 +17,7 @@ def get_bandwidth(f, device):
     n = len(f)
     for b in bandwidths:
         log_kern = get_kernel(f, b, device)
-        log_fhat = torch.logsumexp(log_kern, 1) - torch.log(n-1)
+        log_fhat = torch.logsumexp(log_kern, 1) - torch.log(n - 1)
         l = torch.sum(log_fhat)
         if l > max_l:
             max_l = l
@@ -53,37 +52,10 @@ def get_ece_kde(f, y, bandwidth, p, mc_type, device):
         elif mc_type == 'top_label':
             return get_ratio_toplabel(f, y, bandwidth, p, device)
 
-def get_ece_kde_batch(f, y, bandwidth, p, mc_type, device):
-    """
-    Calculate an estimate of Lp calibration error.
-
-    :param f: The vector containing the probability scores, shape [num_samples, num_classes]
-    :param y: The vector containing the labels, shape [num_samples]
-    :param bandwidth: The bandwidth of the kernel
-    :param p: The p-norm. Typically, p=1 or p=2
-    :param mc_type: The type of multiclass calibration: canonical, marginal or top_label
-    :param device: The device type: 'cpu' or 'cuda'
-
-    :return: An estimate of Lp calibration error
-    """
-    check_input(f, bandwidth, mc_type)
-    eps = 1e-7
-    f = torch.clamp(f, min=eps, max=1 - eps)
-    if f.shape[1] == 1:
-        return 2 * get_ratio_binary(f, y, bandwidth, p, device)
-    else:
-        if mc_type == 'canonical':
-            return get_ratio_canonical_batch(f, y, bandwidth, p, device)
-        elif mc_type == 'marginal':
-            return get_ratio_marginal_vect_batch(f, y, bandwidth, p, device)
-        elif mc_type == 'top_label':
-            return get_ratio_toplabel(f, y, bandwidth, p, device)
 
 def get_ratio_binary(f, y, bandwidth, p, device):
     assert f.shape[1] == 1
-
     log_kern = get_kernel(f, bandwidth, device)
-
     return get_kde_for_ece(f, y, log_kern, p)
 
 
@@ -96,35 +68,11 @@ def get_ratio_canonical(f, y, bandwidth, p, device):
     y_onehot = nn.functional.one_hot(y, num_classes=f.shape[1]).to(torch.float32)
     kern_y = torch.matmul(kern, y_onehot)
     den = torch.sum(kern, dim=1)
-    den = torch.clamp(den, min=1e-10)# to avoid division by 0
+    den = torch.clamp(den, min=1e-10)  # to avoid division by 0
     ratio = kern_y / den.unsqueeze(-1)
     ratio = torch.sum(torch.abs(ratio - f) ** p, dim=1)
     return torch.mean(ratio)
 
-
-def get_ratio_canonical_batch(f, y, bandwidth, p, device):
-    if f.shape[1] > 60:
-        # Slower but more numerically stable implementation for larger number of classes
-        return get_ratio_canonical_log(f, y, bandwidth, p, device)
-    batch_size = 1000
-    num_classes = f.shape[1]
-    batch_ratio =[]
-
-    for i in range(0, len(f), batch_size):
-        batch_f = f[i: min(i + batch_size, len(f))]
-        batch_y = y[i: min(i + batch_size, len(y))]
-        log_kern = get_kernel(batch_f, bandwidth, device)
-        kern = torch.exp(log_kern).to(torch.float32)
-        y_onehot = nn.functional.one_hot(batch_y, num_classes=num_classes).to(torch.float32)
-        kern_y = torch.matmul(kern, y_onehot)
-        den = torch.sum(kern, dim=1)
-        den = torch.clamp(den, min=1e-10)# to avoid division by 0
-
-        ratio = kern_y / den.unsqueeze(-1)
-        ratio = torch.sum(torch.abs(ratio - batch_f)**p, dim=1)
-        batch_ratio.append(ratio)
-    ratio = torch.cat(batch_ratio, dim=0)
-    return torch.mean(ratio)
 
 
 # Note for training: Make sure there are at least two examples for every class present in the batch, otherwise
@@ -139,7 +87,7 @@ def get_ratio_canonical_log(f, y, bandwidth, p, device='cpu'):
         log_kern_y = log_kern + (torch.ones([f.shape[0], 1]) * log_y[:, k].unsqueeze(0))
         log_inner_ratio = torch.logsumexp(log_kern_y, dim=1) - log_den
         inner_ratio = torch.exp(log_inner_ratio)
-        inner_diff = torch.abs(inner_ratio - f[:, k])**p
+        inner_diff = torch.abs(inner_ratio - f[:, k]) ** p
         final_ratio += inner_diff
 
     return torch.mean(final_ratio)
@@ -155,46 +103,6 @@ def get_ratio_marginal_vect(f, y, bandwidth, p, device):
     log_kern_vect = log_kern_vect + log_kern_diag_repeated
 
     return get_kde_for_ece_vect(f, y_onehot, log_kern_vect, p)
-
-# def get_ratio_marginal_vect_batch(f, y, bandwidth, p, device):
-#     batch_size = 1000
-#     num_classes = f.shape[1]
-#     batch_ratio =[]
-#     for i in range(0, len(f), batch_size):
-#         batch_f = f[i: min(i + batch_size, len(f))]
-#         batch_y = y[i: min(i + batch_size, len(y))]
-#         y_onehot = nn.functional.one_hot(batch_y, num_classes=batch_f.shape[1]).to(torch.float32)
-#         log_kern_vect = beta_kernel(batch_f, batch_f, bandwidth).squeeze()
-#         log_kern_diag = torch.diag(torch.finfo(torch.float).min * torch.ones(len(batch_f))).to(device)
-#         # Multiclass case
-#         log_kern_diag_repeated = batch_f.shape[1] * [log_kern_diag]
-#         log_kern_diag_repeated = torch.stack(log_kern_diag_repeated, dim=2)
-#         log_kern_vect = log_kern_vect + log_kern_diag_repeated
-#         batch_ratio.append(get_kde_for_ece_vect_batch(batch_f, y_onehot, log_kern_vect, p))
-#         # import pdb;pdb.set_trace()
-#     ratio= torch.cat(batch_ratio, dim=0)
-#     # return torch.sum(torch.mean(ratio, dim=0))
-#     return torch.mean(ratio, dim=0)
-
-
-def get_ratio_marginal_vect_batch(f, y, bandwidth, p, device):
-    batch_size = 1000
-    num_classes = f.shape[1] 
-    batch_ratio = []
-    for i in range(0, len(f), batch_size):
-        batch_f = f[i: min(i + batch_size, len(f))]
-        batch_y = y[i: min(i + batch_size, len(y))]
-        y_onehot = nn.functional.one_hot(batch_y, num_classes=num_classes).to(torch.float32)
-        log_kern_vect = beta_kernel(batch_f, batch_f, bandwidth).squeeze()
-        log_kern_diag = torch.full((len(batch_f),), float('-inf')).to(device)
-        log_kern_diag = torch.diag(log_kern_diag) 
-        # Multiclass case
-        log_kern_diag_repeated = [log_kern_diag] * num_classes
-        log_kern_diag_repeated = torch.stack(log_kern_diag_repeated, dim=2)
-        log_kern_vect = log_kern_vect + log_kern_diag_repeated
-        batch_ratio.append(get_kde_for_ece_vect(batch_f, y_onehot, log_kern_vect, p))
-    ratio = torch.cat(batch_ratio, dim=0)
-    return torch.mean(ratio, dim=0)
 
 def get_ratio_toplabel(f, y, bandwidth, p, device):
     f_max, indices = torch.max(f, 1)
@@ -214,44 +122,9 @@ def get_kde_for_ece_vect(f, y, log_kern, p):
 
     log_ratio = log_num - log_den
     ratio = torch.exp(log_ratio)
-    ratio = torch.abs(ratio - f)**p
+    ratio = torch.abs(ratio - f) ** p
 
     return torch.sum(torch.mean(ratio, dim=0))
-
-# def get_kde_for_ece_vect_batch(f, y, log_kern, p):
-#     batch_size = 1000
-#     batch_ratio =[]
-#     for i in range(0, len(f), batch_size):
-#         log_kern_y = log_kern * y
-#         # Trick: -inf instead of 0 in log space
-#         log_kern_y[log_kern_y == 0] = torch.finfo(torch.float).min
-#
-#         log_num = torch.logsumexp(log_kern_y, dim=1)
-#         log_den = torch.logsumexp(log_kern, dim=1)
-#
-#         log_ratio = log_num - log_den
-#         ratio = torch.exp(log_ratio)
-#         ratio = torch.abs(ratio - f)**p
-#         batch_ratio.append(ratio)
-#         import pdb;pdb.set_trace()
-#     flattened_list = [item for sublist in batch_ratio for item in sublist]
-#     ratio = torch.tensor(flattened_list)
-#     return torch.sum(torch.mean(ratio, dim=0))
-
-def get_kde_for_ece_vect_batch(f, y, log_kern, p):
-    log_kern_y = log_kern * y
-    # Trick: -inf instead of 0 in log space
-    log_kern_y[log_kern_y == 0] = torch.finfo(torch.float).min
-
-    log_num = torch.logsumexp(log_kern_y, dim=1)
-    log_den = torch.logsumexp(log_kern, dim=1)
-
-    log_ratio = log_num - log_den
-    ratio = torch.exp(log_ratio)
-    ratio = torch.abs(ratio - f)**p
-
-    return ratio
-
 
 def get_kde_for_ece(f, y, log_kern, p):
     f = f.squeeze()
@@ -259,13 +132,13 @@ def get_kde_for_ece(f, y, log_kern, p):
     # Select the entries where y = 1
     idx = torch.where(y == 1)[0]
     if not idx.numel():
-        return torch.sum((torch.abs(-f))**p) / N
+        return torch.sum((torch.abs(-f)) ** p) / N
 
     if idx.numel() == 1:
         # because of -inf in the vector
-        log_kern = torch.cat((log_kern[:idx], log_kern[idx+1:]))
+        log_kern = torch.cat((log_kern[:idx], log_kern[idx + 1:]))
         f_one = f[idx]
-        f = torch.cat((f[:idx], f[idx+1:]))
+        f = torch.cat((f[:idx], f[idx + 1:]))
 
     log_kern_y = torch.index_select(log_kern, 1, idx)
 
@@ -274,10 +147,10 @@ def get_kde_for_ece(f, y, log_kern, p):
 
     log_ratio = log_num - log_den
     ratio = torch.exp(log_ratio)
-    ratio = torch.abs(ratio - f)**p
+    ratio = torch.abs(ratio - f) ** p
 
     if idx.numel() == 1:
-        return (ratio.sum() + f_one ** p)/N
+        return (ratio.sum() + f_one ** p) / N
 
     return torch.mean(ratio)
 
@@ -294,11 +167,11 @@ def get_kernel(f, bandwidth, device):
 
 def beta_kernel(z, zi, bandwidth=0.1):
     p = zi / bandwidth + 1
-    q = (1-zi) / bandwidth + 1
+    q = (1 - zi) / bandwidth + 1
     z = z.unsqueeze(-2)
 
     log_beta = torch.lgamma(p) + torch.lgamma(q) - torch.lgamma(p + q)
-    log_num = (p-1) * torch.log(z) + (q-1) * torch.log(1-z)
+    log_num = (p - 1) * torch.log(z) + (q - 1) * torch.log(1 - z)  # OOM
     log_beta_pdf = log_num - log_beta
 
     return log_beta_pdf
@@ -308,7 +181,7 @@ def dirichlet_kernel(z, bandwidth=0.1):
     alphas = z / bandwidth + 1
 
     log_beta = (torch.sum((torch.lgamma(alphas)), dim=1) - torch.lgamma(torch.sum(alphas, dim=1)))
-    log_num = torch.matmul(torch.log(z), (alphas-1).T)
+    log_num = torch.matmul(torch.log(z), (alphas - 1).T)
     log_dir_pdf = log_num - log_beta
 
     return log_dir_pdf
