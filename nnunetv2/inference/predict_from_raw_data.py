@@ -167,9 +167,14 @@ class nnUNetPredictor(object):
                                        part_id: int = 0,
                                        num_parts: int = 1,
                                        save_probabilities: bool = False):
-        # import pdb;pdb.set_trace()
-        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0"
-        list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
+        # list_of_lists_or_source_folder -->args.i, but no test-set
+        # e.g. /staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021_holdin/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/
+        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
+        root_raw = os.environ.get('nnUNet_raw')
+        list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
+        fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
+        dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
+        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
@@ -916,9 +921,8 @@ def predict_entry_point():
 
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
-    # model_folder = get_output_folder(args.d, args.tr, args.p, args.c) # JJ: why not use args.i here
     # model_folder = get_output_folder(args.d, args.tr, args.p, args.c, suffix=args.suffix)
-    model_folder = args.i.replace(args.suffix,"")
+    model_folder = args.i.replace(args.suffix,"")# JJ:
 
     if not isdir(args.o):
         maybe_mkdir_p(args.o)

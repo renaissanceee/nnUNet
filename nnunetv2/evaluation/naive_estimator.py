@@ -40,11 +40,12 @@ def save_summary_json(results: dict, output_file: str):
     ourselves
     """
     results_converted = deepcopy(results)
+    results_converted['mean_r_bias'] = {label_or_region_to_key(k): results['mean_r_bias'][k]
+                                                      for k in results['mean_r_bias'].keys()}
     results_converted['mean_r_jaccard__ce+123std'] = {label_or_region_to_key(k): results['mean_r_jaccard__ce+123std'][k]
                                                       for k in results['mean_r_jaccard__ce+123std'].keys()}
     results_converted['mean_r_range__ce+123std'] = {label_or_region_to_key(k): results['mean_r_range__ce+123std'][k] for
-                                                    k in
-                                                    results['mean_r_range__ce+123std'].keys()}
+                                                    k in results['mean_r_range__ce+123std'].keys()}
     # convert ratio_per_case
     for i in range(len(results_converted["ratio_per_case"])):
         results_converted["ratio_per_case"][i]['ratio'] = \
@@ -55,6 +56,8 @@ def save_summary_json(results: dict, output_file: str):
 
 def load_summary_json(filename: str):
     results = load_json(filename)
+    results['mean_r_bias'] = {key_to_lgabel_or_region(k): results['mean_r_bias'][k] for k in
+                                            results['mean_r_bias'].keys()}
     results['mean_r_jaccard__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_jaccard__ce+123std'][k] for k in
                                             results['mean_r_jaccard__ce+123std'].keys()}
     results['mean_r_range__ce+123std'] = {key_to_lgabel_or_region(k): results['mean_r_range__ce+123std'][k] for k in
@@ -177,7 +180,7 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     l_range = ce_left + sigma_r  # CE_left + σ
     r_range = ce_right + sigma_r  # CE_right + σ    # range__ce+1std = ce_left + ce_right + 2*sigma_r
     # return r_naive,r_1_ord_corr,r_2_ord_corr,ce_left,ce_right, sigma_r
-    return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left.item(), ce_right.item(), sigma_r.item()
+    return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left.item(), ce_right.item(), sigma_r.item(), epsilon_y.item(), epsilon_x.item()
 
 def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png', sigma="", name_list=[]):
     # xtick_labels
@@ -297,8 +300,8 @@ def plot_r_and_range_dataset(paired_samples, folder_pred, sigma="",step_size = 1
     bound_second = paired_samples['r_second_corr']['bound__ce+1std']
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size
-        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma"), exist_ok=True) # JJ
-        save_path = os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma", f"r_and_range_{end}.png")
+        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma"), exist_ok=True) # JJ
+        save_path = os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma", f"r_and_range_{end}.png")
         plot_r_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],bound_second[start:end], save_path, sigma, name_list[start:end])
 
 def plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10):
@@ -309,8 +312,8 @@ def plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=1
     bound_ce_naive = paired_samples['r_naive']['bound__ce']
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size
-        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma_sep"), exist_ok=True) # JJ
-        save_path = os.path.join(folder_pred, f"val_interval_{step_size}", f"binaryCE_{sigma}sigma_sep", f"ce_and_range_{end}.png")
+        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma_sep"), exist_ok=True) # JJ
+        save_path = os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma_sep", f"ce_and_range_{end}.png")
         plot_ce_and_range(r_est_naive[start:end], r_gt[start:end], bound_ce_naive[start:end], bound_naive[start:end],
                           save_path, sigma, name_list[start:end])
 
@@ -354,14 +357,14 @@ def estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y
 def get_ece_kde_batch(f, y, bandwidth, p, mc_type, device):
     # random permute -> batch -> average
     idx = torch.randperm(f.shape[0])  # 例如 tensor([3, 1, 7, ..., 0])
-    f_shuffled, y_shuffled = f[idx, :], y[idx]
+    f_shuffled, y_shuffled = torch.clamp(f[idx, :], min=0, max=1), y[idx]
     batch_size = int(1e4)  # enough
     batch_ratio = []
     for i in range(0, len(f), batch_size):
         batch_f = f_shuffled[i:min(i + batch_size, len(f))].to(device)
         batch_y = y_shuffled[i:min(i + batch_size, len(y))].to(device)
         batch_ratio.append(get_ece_kde(batch_f, batch_y, bandwidth, p, mc_type, device).to("cpu").item())
-        # break # JJ
+        break # JJ
     # 为什么torch.Size([]), torch.Size([1]), torch.Size([]), ...
     # batch_ratio[53].shape 是[1]??
     return torch.mean(torch.tensor(batch_ratio))
@@ -431,8 +434,9 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {'r_gt': {}, 'r_naive': {}, 'r_first_corr': {}, 'r_second_corr': {}, 'iou_scores': {}}
-
+    results['ratio'] = {'r_gt': {}, 'epsilon_ece_kde': {}, 'r_naive': {}, 'r_first_corr': {}, 'r_second_corr': {}, 'iou_scores': {}}
+    print(f"calculate r for {os.path.basename(reference_file)}")
+    
     "analyze mean/var"
     labels_or_regions = [(2,), (1, 2, 3)]  # (2,3):core, (2,):necrosis
     # gt
@@ -470,7 +474,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     "reformulate r to see how interval(x,y) changes"
     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
                                                                                           tensor_wt_prob_map)
-    r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, sigma_r = analyze_r_ce_std(tensor_nec_prob_map,
+    r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, sigma_r, epsilon_y, epsilon_x = analyze_r_ce_std(tensor_nec_prob_map,
                                                                                        tensor_wt_prob_map,
                                                                                        tensor_nec_gt_map,
                                                                                        tensor_wt_gt_map)
@@ -494,6 +498,9 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     r_gt = nec_gt_counter / wt_gt_counter
     results['ratio']['r_gt']['r_gt'] = r_gt
     results['ratio']['r_gt']['sigma_r'] = sigma_r
+    # CE: y,x
+    results['ratio']['epsilon_ece_kde']['epsilon_y'] = epsilon_y # JJ
+    results['ratio']['epsilon_ece_kde']['epsilon_x'] = epsilon_x
     ## naive
     results['ratio']['r_naive']['r_est'] = r_naive
     # [x,y]
@@ -583,9 +590,13 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         mean_r_jaccard[r] = np.mean(paired_samples[r]['iou_scores'], axis=0)
 
     ################################################
+    # r_gt and ref.nii.gz
+    paired_samples['r_gt'] = {}
+    paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
+    paired_samples['reference_file'] = np.array([item['reference_file'] for item in results])  # [N,]
     ## Range: as narrow as possible ##
     mean_r_range = {}
-    # 1.
+    mean_r_bias = {}
     scores = ['r_naive', 'r_first_corr', 'r_second_corr']
     for r in scores:
         paired_samples[r] = {}
@@ -602,18 +613,24 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         r_range_123 = np.stack((paired_samples[r]['range__ce+1std'], paired_samples[r]['range__ce+2std'],
                                 paired_samples[r]['range__ce+3std']), axis=1)
         mean_r_range[r] = np.mean(r_range_123, axis=0)
-    # 2.
-    paired_samples['r_gt'] = {}
-    paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
-    # 3.
-    # results['reference_file'] = reference_file
-    paired_samples['reference_file'] = np.array([item['reference_file'] for item in results])  # [N,]
+        mean_r_bias[r] = np.mean(paired_samples[r]['r_est']-paired_samples['r_gt']['r_gt'])
+    # cali-error for y and x
+    mean_epsilon = {}
+    paired_samples['epsilon_ece_kde'] = {}
+    paired_samples['epsilon_ece_kde']['epsilon_y']=np.array([item['ratio']['epsilon_ece_kde']['epsilon_y'] for item in results])
+    paired_samples['epsilon_ece_kde']['epsilon_x']=np.array([item['ratio']['epsilon_ece_kde']['epsilon_x'] for item in results]) # JJ
+    mean_epsilon['epsilon_y'] = np.mean(paired_samples['epsilon_ece_kde']['epsilon_y'])
+    mean_epsilon['epsilon_x'] = np.mean(paired_samples['epsilon_ece_kde']['epsilon_x'])
+
+
 
     # write into json
     [recursive_fix_for_json_export(i) for i in results]
     recursive_fix_for_json_export(mean_r_jaccard)
     recursive_fix_for_json_export(mean_r_range)
-    result = {'mean_r_jaccard__ce+123std': mean_r_jaccard, 'mean_r_range__ce+123std': mean_r_range,
+    recursive_fix_for_json_export(mean_r_bias)
+    recursive_fix_for_json_export(mean_epsilon)
+    result = {'mean_ece_kde': mean_epsilon, 'mean_r_bias': mean_r_bias, 'mean_r_jaccard__ce+123std': mean_r_jaccard, 'mean_r_range__ce+123std': mean_r_range,
               'ratio_per_case': results}
     if output_file is not None:
         save_summary_json(result, output_file)
@@ -633,7 +650,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         key: {subkey: value.tolist() if isinstance(value, np.ndarray) else value for subkey, value in value.items()} for
         key, value in result.items()}
     result_as_list['failure'] = case_ids[mask].tolist()# 'failure': case_ids[mask]
-    save_json(result_as_list, 'plot.json', sort_keys=False) # JJ
+    save_json(result_as_list, f'plot_{output_file}', sort_keys=False) # JJ
     ################################################
     # # "val_interval": r, r_corr
     plot_r_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10)
