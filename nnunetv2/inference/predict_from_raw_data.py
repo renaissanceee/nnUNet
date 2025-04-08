@@ -166,7 +166,8 @@ class nnUNetPredictor(object):
                                        overwrite: bool = True,
                                        part_id: int = 0,
                                        num_parts: int = 1,
-                                       save_probabilities: bool = False):
+                                       save_probabilities: bool = False,
+                                       TS=False):
         # list_of_lists_or_source_folder -->args.i, but no test-set
         # e.g. /staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021_holdin/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/
         # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
@@ -175,6 +176,10 @@ class nnUNetPredictor(object):
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
         list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
+        # JJ
+        if TS:
+            list_of_lists_or_source_folder = os.path.join(root_raw.replace("holdin","holdout"), dataset_name, 'imagesTr') #251 holdout in imagesTr
+            # but, how to load labelsTr
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
@@ -217,7 +222,8 @@ class nnUNetPredictor(object):
                            num_processes_segmentation_export: int = default_num_processes,
                            folder_with_segs_from_prev_stage: str = None,
                            num_parts: int = 1,
-                           part_id: int = 0):
+                           part_id: int = 0,
+                           TS: bool = False):
         """
         This is nnU-Net's default function for making predictions. It works best for batch predictions
         (predicting many images at once).
@@ -258,7 +264,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,
-                                                save_probabilities)
+                                                save_probabilities, TS)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -385,7 +391,7 @@ class nnUNetPredictor(object):
                     proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
 
                 prediction = self.predict_logits_from_preprocessed_data(data).cpu() # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
-
+                import pdb;pdb.set_trace()
                 if ofile is not None:
                     # this needs to go into background processes
                     # export_prediction_from_logits(prediction, properties, self.configuration_manager, self.plans_manager,
@@ -671,7 +677,7 @@ class nnUNetPredictor(object):
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
                            overwrite: bool = True,
-                           folder_with_segs_from_prev_stage: str = None):
+                           folder_with_segs_from_prev_stage: str = None, TS: bool=False):
         """
         Just like predict_from_files but doesn't use any multiprocessing. Slow, but sometimes necessary
         """
@@ -711,7 +717,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, 0, 1,
-                                                save_probabilities)
+                                                save_probabilities,TS)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -801,6 +807,8 @@ def predict_entry_point_modelfolder():
     parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
                         help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
                              'jobs)')
+    parser.add_argument('--TS', action='store_true', required=False, default=False,
+                        help='Temperature Scaling: replace holdin with holdout')
 
     print(
         "\n#######################################################################\nPlease cite the following paper "
@@ -844,7 +852,7 @@ def predict_entry_point_modelfolder():
                                  num_processes_preprocessing=args.npp,
                                  num_processes_segmentation_export=args.nps,
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
-                                 num_parts=1, part_id=0)
+                                 num_parts=1, part_id=0, TS=args.TS)
 
 
 def predict_entry_point():
@@ -912,6 +920,8 @@ def predict_entry_point():
                              'jobs)')
     parser.add_argument('--suffix', type=str, required=False, default='',
                         help='suffix to indicate training settings')
+    parser.add_argument('--TS', action='store_true', required=False, default=False,
+                        help='Temperature Scaling: replace holdin with holdout')
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -964,7 +974,7 @@ def predict_entry_point():
                                  num_processes_segmentation_export=args.nps,
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
                                  num_parts=args.num_parts,
-                                 part_id=args.part_id)
+                                 part_id=args.part_id,TS=args.TS)
     # r = predict_from_raw_data(args.i,
     #                           args.o,
     #                           model_folder,
