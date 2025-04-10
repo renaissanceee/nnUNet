@@ -267,7 +267,7 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
         linewidth=8,
         alpha=0.3,
         zorder=1,
-        label=r'$I_{uncalib.}$'
+        label=r'$I_{miscalib.}$'
     )
     # 绘制真实值（红色散点）
     ax.scatter(
@@ -300,8 +300,9 @@ def plot_r_and_range_dataset(paired_samples, folder_pred, sigma="",step_size = 1
     bound_second = paired_samples['r_second_corr']['bound__ce+1std']
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size
-        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma"), exist_ok=True) # JJ
-        save_path = os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma", f"r_and_range_{end}.png")
+        root = join(folder_pred, 'prob_ratio_metrics',f"plots_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma")
+        os.makedirs(root, exist_ok=True)
+        save_path = join(root, f"r_and_range_{end}.png")
         plot_r_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],bound_second[start:end], save_path, sigma, name_list[start:end])
 
 def plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10):
@@ -312,8 +313,9 @@ def plot_ce_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=1
     bound_ce_naive = paired_samples['r_naive']['bound__ce']
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size
-        os.makedirs(os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma_sep"), exist_ok=True) # JJ
-        save_path = os.path.join(folder_pred, f"val_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma_sep", f"ce_and_range_{end}.png")
+        root = join(folder_pred, 'prob_ratio_metrics', f"plots_interval_{step_size}_1e4", f"binaryCE_{sigma}sigma_sep")
+        os.makedirs(root, exist_ok=True)
+        save_path = join(root, f"ce_and_range_{end}.png")
         plot_ce_and_range(r_est_naive[start:end], r_gt[start:end], bound_ce_naive[start:end], bound_naive[start:end],
                           save_path, sigma, name_list[start:end])
 
@@ -573,7 +575,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     # i =0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # i += 1
-        # if i> 230 or i<220: continue  # JJ: first two samples
+        # if i> 130 or i<120: continue  # JJ: first two samples
         # if (ref!="/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0/BraTS2021_01240.nii.gz"
         #         and ref!="/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/labelsTs/fold_0/BraTS2021_00753.nii.gz"): continue
         # result = compute_metrics(ref, pred, image_reader_writer, regions_or_labels, ignore_label) # also do
@@ -613,7 +615,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         r_range_123 = np.stack((paired_samples[r]['range__ce+1std'], paired_samples[r]['range__ce+2std'],
                                 paired_samples[r]['range__ce+3std']), axis=1)
         mean_r_range[r] = np.mean(r_range_123, axis=0)
-        mean_r_bias[r] = np.mean(paired_samples[r]['r_est']-paired_samples['r_gt']['r_gt'])
+        paired_samples[r]['bias_r'] = paired_samples[r]['r_est']-paired_samples['r_gt']['r_gt']
+        mean_r_bias[r] = np.mean(paired_samples[r]['bias_r'])
     # cali-error for y and x
     mean_epsilon = {}
     paired_samples['epsilon_ece_kde'] = {}
@@ -633,7 +636,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     result = {'mean_ece_kde': mean_epsilon, 'mean_r_bias': mean_r_bias, 'mean_r_jaccard__ce+123std': mean_r_jaccard, 'mean_r_range__ce+123std': mean_r_range,
               'ratio_per_case': results}
     if output_file is not None:
-        save_summary_json(result, output_file)
+        os.makedirs(join(folder_pred,'ratio_metrics'),exist_ok=True)
+        save_summary_json(result, join(folder_pred,'ratio_metrics',output_file))
 
 
     # fail_case: outside the range
@@ -650,7 +654,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         key: {subkey: value.tolist() if isinstance(value, np.ndarray) else value for subkey, value in value.items()} for
         key, value in result.items()}
     result_as_list['failure'] = case_ids[mask].tolist()# 'failure': case_ids[mask]
-    save_json(result_as_list, f'plot_{output_file}', sort_keys=False) # JJ
+    os.makedirs(join(folder_pred, 'ratio_metrics'), exist_ok=True)
+    save_json(result_as_list, join(folder_pred,'ratio_metrics', f'plot_{output_file}'), sort_keys=False)
     ################################################
     # # "val_interval": r, r_corr
     plot_r_and_range_dataset(paired_samples, folder_pred, sigma="", step_size=10)

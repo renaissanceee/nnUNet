@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import datetime
 from time import time, sleep
 from typing import Tuple, Union, List
-
+import torch.nn.functional as F
 import numpy as np
 import torch
 from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
@@ -36,7 +36,7 @@ from batchgeneratorsv2.transforms.utils.pseudo2d import Convert3DTo2DTransform, 
 from batchgeneratorsv2.transforms.utils.random import RandomTransform
 from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
 from batchgeneratorsv2.transforms.utils.seg_to_regions import ConvertSegmentationToRegionsTransform
-from torch import autocast, nn
+from torch import autocast, nn, optim
 from torch import distributed as dist
 from torch._dynamo import OptimizedModule
 from torch.cuda import device_count
@@ -45,6 +45,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
+from nnunetv2.evaluation.ratio_estimator import get_ece_kde_1e4_train
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
@@ -156,7 +157,7 @@ class nnUNetTrainer(object):
         self.num_iterations_per_epoch = 250
         self.num_val_iterations_per_epoch = 50
         # self.num_epochs = 50 #100 #1000
-        self.num_epochs = 100
+        self.num_epochs = 5
         self.current_epoch = 0
         self.enable_deep_supervision = True
 
@@ -168,6 +169,8 @@ class nnUNetTrainer(object):
         self.num_input_channels = None  # -> self.initialize()
         self.network = None  # -> self.build_network_architecture()
         self.optimizer = self.lr_scheduler = None  # -> self.initialize
+        self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
+        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=100)  # JJ: 50
         self.grad_scaler = GradScaler() if self.device.type == 'cuda' else None
         self.loss = None  # -> self.initialize
 
@@ -927,6 +930,12 @@ class nnUNetTrainer(object):
 
         mod.decoder.deep_supervision = enabled
 
+    def temperature_scale(self, logits):
+        """
+        Perform temperature scaling on logits
+        """
+        return [ ms_logits/ self.temperature for ms_logits in logits]
+
     def on_train_start(self):
         # dataloaders must be instantiated here (instead of __init__) because they need access to the training data
         # which may not be present  when doing inference
@@ -973,12 +982,42 @@ class nnUNetTrainer(object):
         # dirty hack because on_epoch_end increments the epoch counter and this is executed afterwards.
         # This will lead to the wrong current epoch to be stored
         self.current_epoch -= 1
-        self.save_checkpoint(join(self.output_folder, "checkpoint_final.pth"))
+        self.save_checkpoint(join(self.output_folder, "checkpoint_final.pth"))# JJ: TS
         self.current_epoch += 1
 
         # now we can delete latest
         if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
             os.remove(join(self.output_folder, "checkpoint_latest.pth"))
+
+        # shut down dataloaders
+        old_stdout = sys.stdout
+        with open(os.devnull, 'w') as f:
+            sys.stdout = f
+            if self.dataloader_train is not None and \
+                    isinstance(self.dataloader_train, (NonDetMultiThreadedAugmenter, MultiThreadedAugmenter)):
+                self.dataloader_train._finish()
+            if self.dataloader_val is not None and \
+                    isinstance(self.dataloader_train, (NonDetMultiThreadedAugmenter, MultiThreadedAugmenter)):
+                self.dataloader_val._finish()
+            sys.stdout = old_stdout
+
+        empty_cache(self.device)
+        self.print_to_log_file("Training done.")
+
+    def on_train_end_TS(self):
+        # dirty hack because on_epoch_end increments the epoch counter and this is executed afterwards.
+        # This will lead to the wrong current epoch to be stored
+        self.current_epoch -= 1
+        self.save_checkpoint(join(self.output_folder, "checkpoint_final.pth"))# JJ: TS
+        self.current_epoch += 1
+
+        # now we can delete latest
+        if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
+            os.remove(join(self.output_folder, "checkpoint_latest.pth"))
+        # temperature.json
+        result_as_list={}
+        result_as_list['temperature'] = [self.temperature.detach().cpu().item()]  # 'temperature': 1.37
+        save_json(result_as_list, join(self.output_folder, "temperature.json"))
 
         # shut down dataloaders
         old_stdout = sys.stdout
@@ -1004,6 +1043,38 @@ class nnUNetTrainer(object):
             f"Current learning rate: {np.round(self.optimizer.param_groups[0]['lr'], decimals=5)}")
         # lrs are the same for all workers so we don't need to gather them in case of DDP training
         self.logger.log('lrs', self.optimizer.param_groups[0]['lr'], self.current_epoch)
+
+    def train_step(self, batch: dict) -> dict:
+        data = batch['data']
+        target = batch['target']
+
+        data = data.to(self.device, non_blocking=True)
+        if isinstance(target, list):
+            target = [i.to(self.device, non_blocking=True) for i in target]
+        else:
+            target = target.to(self.device, non_blocking=True)
+
+        self.optimizer.zero_grad(set_to_none=True)
+        # Autocast can be annoying
+        # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
+        # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
+        # So autocast will only be active if we have a cuda device.
+        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+            output = self.network(data)
+            # del data
+            l = self.loss(output, target)
+
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(l).backward()
+            self.grad_scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            l.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.optimizer.step()
+        return {'loss': l.detach().cpu().numpy()}
 
     # def train_step(self, batch: dict, epoch: int, start_epoch: int) -> dict:
     #     data = batch['data']
@@ -1092,6 +1163,38 @@ class nnUNetTrainer(object):
     #         self.optimizer.step()
     #     return {'loss': l.detach().cpu().numpy()}
 
+    def train_step_TS(self, batch: dict) -> dict:
+        self.grad_scaler = None  # JJ
+        data = batch['data']
+        target = batch['target']
+
+        data = data.to(self.device, non_blocking=True)
+        if isinstance(target, list):
+            target = [i.to(self.device, non_blocking=True) for i in target]
+        else:
+            target = target.to(self.device, non_blocking=True)
+
+        self.optimizer.zero_grad(set_to_none=True)
+        self.network.requires_grad_(False) # JJ: frozen vackbone
+        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+            output = self.network(data)
+            weight_ce, bandwidth = 0.1, 0.02
+            def eval_TS():
+                self.optimizer_TS.zero_grad()
+                l = self.loss(self.temperature_scale(output), target) # for_CrE
+                print(f"seg_loss: {l}")
+                # print(f"base_loss: {self.loss(output, target)}")
+                # print(f"TS_loss: {l}", f"temperature: {self.temperature}")
+                tensor_prob_map = F.softmax(self.temperature_scale(output)[0].reshape(-1,4), dim=1)
+                tensor_gt_map = target[0].reshape(-1).to(torch.int64)
+                epsilon_canonical = get_ece_kde_1e4_train(tensor_prob_map, tensor_gt_map, bandwidth,p=1,mc_type='canonical', device=self.device)
+                print(f"ECE_kde_canonical: {epsilon_canonical}")
+                l+= weight_ce * epsilon_canonical # for_KDE
+                l.backward()
+                return l
+            l=self.optimizer_TS.step(eval_TS)
+        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
+
     def train_step(self, batch: dict) -> dict:
         data = batch['data']
         target = batch['target']
@@ -1112,7 +1215,7 @@ class nnUNetTrainer(object):
             # print(output)
             # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
             # for label-based: replace 3 with 4 ->label 0,1,2,3
-            l = self.loss(output, target)# target only includes True/False
+            l = self.loss(output, target)
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()
@@ -1125,18 +1228,6 @@ class nnUNetTrainer(object):
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
             self.optimizer.step()
         return {'loss': l.detach().cpu().numpy()}
-
-    def on_train_epoch_end(self, train_outputs: List[dict]):
-        outputs = collate_outputs(train_outputs)
-
-        if self.is_ddp:
-            losses_tr = [None for _ in range(dist.get_world_size())]
-            dist.all_gather_object(losses_tr, outputs['loss'])
-            loss_here = np.vstack(losses_tr).mean()
-        else:
-            loss_here = np.mean(outputs['loss'])
-
-        self.logger.log('train_losses', loss_here, self.current_epoch)
 
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
@@ -1265,17 +1356,8 @@ class nnUNetTrainer(object):
                                                self.logger.my_fantastic_logging['dice_per_class_or_region'][-1]])
         self.print_to_log_file(
             f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], decimals=2)} s")
-
-        # handling periodic checkpointing
-        current_epoch = self.current_epoch
-        if (current_epoch + 1) % self.save_every == 0 and current_epoch != (self.num_epochs - 1):
-            self.save_checkpoint(join(self.output_folder, 'checkpoint_latest.pth'))
-
-        # handle 'best' checkpointing. ema_fg_dice is computed by the logger and can be accessed like this
-        if self._best_ema is None or self.logger.my_fantastic_logging['ema_fg_dice'][-1] > self._best_ema:
-            self._best_ema = self.logger.my_fantastic_logging['ema_fg_dice'][-1]
-            self.print_to_log_file(f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}")
-            self.save_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+        ## JJ: for TS ##
+        # self.print_to_log_file('temperature', self.temperature)  # $ JJ
 
         if self.local_rank == 0:
             self.logger.plot_progress_png(self.output_folder)
@@ -1361,7 +1443,7 @@ class nnUNetTrainer(object):
 
         predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
                                     perform_everything_on_device=True, device=self.device, verbose=False,
-                                    verbose_preprocessing=False, allow_tqdm=False)
+                                    verbose_preprocessing=False, allow_tqdm=False, temperature=self.temperature) # TS
         predictor.manual_initialization(self.network, self.plans_manager, self.configuration_manager, None,
                                         self.dataset_json, self.__class__.__name__,
                                         self.inference_allowed_mirroring_axes)
@@ -1499,7 +1581,8 @@ class nnUNetTrainer(object):
             train_outputs = []
 
             for batch_id in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train)))
+                # train_outputs.append(self.train_step(next(self.dataloader_train)))
+                train_outputs.append(self.train_step_TS(next(self.dataloader_train)))# TS
 
             self.on_train_epoch_end(train_outputs)
 
@@ -1512,4 +1595,5 @@ class nnUNetTrainer(object):
 
             self.on_epoch_end()
 
-        self.on_train_end()
+        # self.on_train_end()
+        self.on_train_end_TS()# TS

@@ -63,6 +63,7 @@ def get_ratio_canonical(f, y, bandwidth, p, device):
     if f.shape[1] > 60:
         # Slower but more numerically stable implementation for larger number of classes
         return get_ratio_canonical_log(f, y, bandwidth, p, device)
+    # import pdb;pdb.set_trace()
     log_kern = get_kernel(f, bandwidth, device)
     kern = torch.exp(log_kern)
     y_onehot = nn.functional.one_hot(y, num_classes=f.shape[1]).to(torch.float32)

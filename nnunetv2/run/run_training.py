@@ -93,6 +93,11 @@ def maybe_load_checkpoint(nnunet_trainer: nnUNetTrainer, continue_training: bool
             if not nnunet_trainer.was_initialized:
                 nnunet_trainer.initialize()
             load_pretrained_weights(nnunet_trainer.network, pretrained_weights_file, verbose=True)
+            # TS: no change for .pth
+            import shutil
+            expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_final.pth")
+            print(f"Shuffle {pretrained_weights_file} → {expected_checkpoint_file}")
+            shutil.copyfile(pretrained_weights_file, expected_checkpoint_file)
         expected_checkpoint_file = None
 
     if expected_checkpoint_file is not None:

@@ -103,10 +103,7 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['metrics'] = {}
-    # print(np.count_nonzero(seg_ref == 0.0))
-    # print(np.count_nonzero(seg_ref == 1.0))
-    # print(np.count_nonzero(seg_ref == 2.0))
-    # print(np.count_nonzero(seg_ref == 3.0)) --> sum up to be 240*240*155
+
 
     for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
         # import pdb;pdb.set_trace()

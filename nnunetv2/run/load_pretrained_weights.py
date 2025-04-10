@@ -21,10 +21,11 @@ def load_pretrained_weights(network, fname, verbose=False):
     else:
         saved_model = torch.load(fname)
     pretrained_dict = saved_model['network_weights']
-
-    skip_strings_in_pretrained = [
-        '.seg_layers.',
-    ]
+    # skip_strings_in_pretrained = [
+    #     '.seg_layers.',
+    # ]
+    print("...in my case, the whole model is loaded....")
+    skip_strings_in_pretrained = []
 
     if isinstance(network, DDP):
         mod = network.module
@@ -44,27 +45,17 @@ def load_pretrained_weights(network, fname, verbose=False):
                 f"The shape of the parameters of key {key} is not the same. Pretrained model: " \
                 f"{pretrained_dict[key].shape}; your network: {model_dict[key]}. The pretrained model " \
                 f"does not seem to be compatible with your network."
-
-    # fun fact: in principle this allows loading from parameters that do not cover the entire network. For example pretrained
-    # encoders. Not supported by this function though (see assertions above)
-
-    # commenting out this abomination of a dict comprehension for preservation in the archives of 'what not to do'
-    # pretrained_dict = {'module.' + k if is_ddp else k: v
-    #                    for k, v in pretrained_dict.items()
-    #                    if (('module.' + k if is_ddp else k) in model_dict) and
-    #                    all([i not in k for i in skip_strings_in_pretrained])}
-
     pretrained_dict = {k: v for k, v in pretrained_dict.items()
                        if k in model_dict.keys() and all([i not in k for i in skip_strings_in_pretrained])}
-
     model_dict.update(pretrained_dict)
 
     print("################### Loading pretrained weights from file ", fname, '###################')
-    if verbose:
-        print("Below is the list of overlapping blocks in pretrained model and nnUNet architecture:")
-        for key, value in pretrained_dict.items():
-            print(key, 'shape', value.shape)
-        print("################### Done ###################")
+    ## JJ: I dont need.
+    # if verbose:
+    #     print("Below is the list of overlapping blocks in pretrained model and nnUNet architecture:")
+    #     for key, value in pretrained_dict.items():
+    #         print(key, 'shape', value.shape)
+    #     print("################### Done ###################")
     mod.load_state_dict(model_dict)
 
 

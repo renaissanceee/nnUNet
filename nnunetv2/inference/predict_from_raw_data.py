@@ -5,7 +5,7 @@ import os
 from copy import deepcopy
 from time import sleep
 from typing import Tuple, Union, List, Optional
-
+import json
 import numpy as np
 import torch
 from acvl_utils.cropping_and_padding.padding import pad_nd_image
@@ -43,7 +43,8 @@ class nnUNetPredictor(object):
                  device: torch.device = torch.device('cuda'),
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
-                 allow_tqdm: bool = True):
+                 allow_tqdm: bool = True,
+                 temperature: float=1.0):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -61,6 +62,7 @@ class nnUNetPredictor(object):
             perform_everything_on_device = False
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
+        self.temperature=temperature
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -176,10 +178,8 @@ class nnUNetPredictor(object):
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
         list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
-        # JJ
-        if TS:
-            list_of_lists_or_source_folder = os.path.join(root_raw.replace("holdin","holdout"), dataset_name, 'imagesTr') #251 holdout in imagesTr
-            # but, how to load labelsTr
+        # if TS:
+        #     list_of_lists_or_source_folder = os.path.join(root_raw.replace("holdin","holdout"), dataset_name, 'imagesTr') #251 holdout in imagesTr
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
@@ -393,9 +393,6 @@ class nnUNetPredictor(object):
                 prediction = self.predict_logits_from_preprocessed_data(data).cpu() # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
 
                 if ofile is not None:
-                    # this needs to go into background processes
-                    # export_prediction_from_logits(prediction, properties, self.configuration_manager, self.plans_manager,
-                    #                               self.dataset_json, ofile, save_probabilities)
                     print('sending off prediction to background worker for resampling and export')
                     r.append(
                         export_pool.starmap_async(
@@ -553,6 +550,8 @@ class nnUNetPredictor(object):
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
         prediction = self.network(x)
+        ## TS
+        # prediction = prediction/self.temperature
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -598,7 +597,7 @@ class nnUNetPredictor(object):
                                             device=results_device)
             else:
                 gaussian = 1
-            print(f'running prediction: {len(slicers)} steps') # z=146
+            print(f'running prediction: {len(slicers)} steps') # z=155 but here smaller
             for sl in tqdm(slicers, disable=not self.allow_tqdm):
                 workon = data[sl][None]
                 workon = workon.to(self.device)
@@ -838,6 +837,17 @@ def predict_entry_point_modelfolder():
     else:
         device = torch.device('mps')
 
+    temperature_from_json = 1.0
+    potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
+    if os.path.isfile(potential_TS_path) and args.TS:
+        temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
+        print(f"Temperature Scaling: loading {temperature_from_json}")
+    elif not args.TS:
+        print(f"You don't want temperature_scaling...")
+    else:
+        print(f"missing temperature.json in: {potential_TS_path}")
+
+
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
                                 use_mirroring=not args.disable_tta,
@@ -845,7 +855,8 @@ def predict_entry_point_modelfolder():
                                 device=device,
                                 verbose=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                verbose_preprocessing=args.verbose)
+                                verbose_preprocessing=args.verbose,
+                                temperature=temperature_from_json)# TS
     predictor.initialize_from_trained_model_folder(args.m, args.f, args.chk)
     predictor.predict_from_files(args.i, args.o, save_probabilities=args.save_probabilities,
                                  overwrite=not args.continue_prediction,
@@ -954,7 +965,17 @@ def predict_entry_point():
         device = torch.device('cuda')
     else:
         device = torch.device('mps')
-
+        
+    potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
+    if os.path.isfile(potential_TS_path) and args.TS:
+        temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
+        print(f"Temperature Scaling: loading {temperature_from_json}")
+    elif not args.TS:
+        temperature_from_json = 1.0
+        print(f"You don't want temperature_scaling...")
+    else:
+        print(f"missing temperature.json in: {potential_TS_path}")
+            
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
                                 use_mirroring=not args.disable_tta,
@@ -962,7 +983,8 @@ def predict_entry_point():
                                 device=device,
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
-                                allow_tqdm=not args.disable_progress_bar)
+                                allow_tqdm=not args.disable_progress_bar,
+                                temperature=temperature_from_json)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,
@@ -1014,20 +1036,7 @@ if __name__ == '__main__':
         use_folds=(0,),
         checkpoint_name='checkpoint_final.pth',
     )
-    # predictor.predict_from_files(join(nnUNet_raw, 'Dataset003_Liver/imagesTs'),
-    #                              join(nnUNet_raw, 'Dataset003_Liver/imagesTs_predlowres'),
-    #                              save_probabilities=False, overwrite=False,
-    #                              num_processes_preprocessing=2, num_processes_segmentation_export=2,
-    #                              folder_with_segs_from_prev_stage=None, num_parts=1, part_id=0)
-    #
-    # # predict a numpy array
-    # from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
-    #
-    # img, props = SimpleITKIO().read_images([join(nnUNet_raw, 'Dataset003_Liver/imagesTr/liver_63_0000.nii.gz')])
-    # ret = predictor.predict_single_npy_array(img, props, None, None, False)
-    #
-    # iterator = predictor.get_data_iterator_from_raw_npy_data([img], None, [props], None, 1)
-    # ret = predictor.predict_from_data_iterator(iterator, False, 1)
+
 
     ret = predictor.predict_from_files_sequential(
         [['/media/isensee/raw_data/nnUNet_raw/Dataset004_Hippocampus/imagesTs/hippocampus_002_0000.nii.gz'], ['/media/isensee/raw_data/nnUNet_raw/Dataset004_Hippocampus/imagesTs/hippocampus_005_0000.nii.gz']],
