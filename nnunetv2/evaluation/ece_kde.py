@@ -67,7 +67,7 @@ def get_ratio_canonical(f, y, bandwidth, p, device):
     log_kern = get_kernel(f, bandwidth, device)
     kern = torch.exp(log_kern)
     y_onehot = nn.functional.one_hot(y, num_classes=f.shape[1]).to(torch.float32)
-    kern_y = torch.matmul(kern, y_onehot)
+    kern_y = torch.matmul(kern, y_onehot) # inf, why?
     den = torch.sum(kern, dim=1)
     den = torch.clamp(den, min=1e-10)  # to avoid division by 0
     ratio = kern_y / den.unsqueeze(-1)

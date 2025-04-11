@@ -372,8 +372,10 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     # binary
     if binary:
         print("Hey, now we binarize preds for seg (not prob)")
-        tensor_nec_prob_map = (tensor_nec_prob_map > 0.5).to(torch.float64)
-        tensor_wt_prob_map = (tensor_wt_prob_map > 0.5).to(torch.float64)
+        # seg: argmax for 1
+        tensor_seg_pred = torch.from_numpy(seg_pred)
+        tensor_nec_prob_map = (tensor_seg_pred==2).to(torch.float64)
+        tensor_wt_prob_map = torch.isin(tensor_seg_pred, torch.tensor([1, 2, 3])).double()
 
     tensor_nec_gt_map = torch.from_numpy(nec_gt_map).squeeze(0)
     tensor_wt_gt_map = torch.from_numpy(wt_gt_map).squeeze(0)
