@@ -668,7 +668,11 @@ def evaluate_folder_entry_point():
                         help='dont crash if folder_pred does not have all files that are present in folder_gt')
     parser.add_argument('--binary', action='store_true',
                         help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--TS', action='store_true',
+                        help='temperature_scaling')
     args = parser.parse_args()
+    if not args.TS:
+        args.pred_folder = args.pred_folder.replace('validation', 'validation_wo_TS')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
                                chill=args.chill, binary=args.binary)
 

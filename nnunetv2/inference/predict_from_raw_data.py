@@ -44,7 +44,7 @@ class nnUNetPredictor(object):
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
                  allow_tqdm: bool = True,
-                 temperature: float=1.0):
+                 temperature: Optional[float] = 1.0):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -178,11 +178,13 @@ class nnUNetPredictor(object):
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
         list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
-        # if TS:
-        #     list_of_lists_or_source_folder = os.path.join(root_raw.replace("holdin","holdout"), dataset_name, 'imagesTr') #251 holdout in imagesTr
+
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
+        if not TS:
+            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace("validation","validation_wo_TS")
+
         print(f'There are {len(list_of_lists_or_source_folder)} cases in the source folder')
         list_of_lists_or_source_folder = list_of_lists_or_source_folder[part_id::num_parts]
         caseids = [os.path.basename(i[0])[:-(len(self.dataset_json['file_ending']) + 5)] for i in
@@ -195,6 +197,7 @@ class nnUNetPredictor(object):
             output_filename_truncated = [join(output_folder_or_list_of_truncated_output_files, i) for i in caseids]
         else:
             output_filename_truncated = output_folder_or_list_of_truncated_output_files
+
 
         seg_from_prev_stage_files = [join(folder_with_segs_from_prev_stage, i + self.dataset_json['file_ending']) if
                                      folder_with_segs_from_prev_stage is not None else None for i in caseids]
@@ -494,10 +497,9 @@ class nnUNetPredictor(object):
         for params in self.list_of_parameters: # 5 tqdm: step-by-step load model params, avoid OOM
             # messing with state dict names...
             if not isinstance(self.network, OptimizedModule):
-                self.network.load_state_dict(params)
+                self.network.load_state_dict(params)# PlainConvUNet
             else:
                 self.network._orig_mod.load_state_dict(params)
-
             # why not leave prediction on device if perform_everything_on_device? Because this may cause the
             # second iteration to crash due to OOM. Grabbing that with try except cause way more bloated code than
             # this actually saves computation time
@@ -550,8 +552,9 @@ class nnUNetPredictor(object):
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
         prediction = self.network(x)
-        ## TS
-        # prediction = prediction/self.temperature
+        # print(self.temperature, '!!!') # JJ
+        if self.temperature is not None:
+            prediction = prediction / self.temperature  # TS
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -837,15 +840,18 @@ def predict_entry_point_modelfolder():
     else:
         device = torch.device('mps')
 
-    temperature_from_json = 1.0
-    potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
-    if os.path.isfile(potential_TS_path) and args.TS:
-        temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-        print(f"Temperature Scaling: loading {temperature_from_json}")
-    elif not args.TS:
-        print(f"You don't want temperature_scaling...")
+    if args.TS:
+        potential_TS_path=join(args.i, 'temperature.json')
+        if os.path.exists(potential_TS_path):
+            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
+            print(f"Temperature Scaling: loading {temperature_from_json}")
+        else:
+            print(f"Missing json in :{potential_TS_path}")
+            print("So no TS here!")
+            temperature_from_json = None
     else:
-        print(f"missing temperature.json in: {potential_TS_path}")
+        temperature_from_json = None
+        print(f"You don't want temperature_scaling...")
 
 
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
@@ -966,15 +972,19 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
         
-    potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
-    if os.path.isfile(potential_TS_path) and args.TS:
-        temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-        print(f"Temperature Scaling: loading {temperature_from_json}")
-    elif not args.TS:
-        temperature_from_json = 1.0
-        print(f"You don't want temperature_scaling...")
+    if args.TS:
+        # potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
+        potential_TS_path=join(args.i, 'temperature.json')
+        if os.path.exists(potential_TS_path):
+            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
+            print(f"Temperature Scaling: loading {temperature_from_json}")
+        else:
+            print(f"Missing json in :{potential_TS_path}")
+            print("So no TS here!")
+            temperature_from_json = None
     else:
-        print(f"missing temperature.json in: {potential_TS_path}")
+        temperature_from_json = None
+        print(f"You don't want temperature_scaling...")
             
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
