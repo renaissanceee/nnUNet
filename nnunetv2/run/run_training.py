@@ -36,6 +36,7 @@ def get_trainer_from_args(dataset_name_or_id: Union[int, str],
                           plans_identifier: str = 'nnUNetPlans',
                           use_compressed: bool = False,
                           TS: bool = False,
+                          IR: bool = False,
                           pretrained_weights: Optional[str] = None,
                           device: torch.device = torch.device('cuda')):
     # load nnunet class and do sanity checks
@@ -66,7 +67,7 @@ def get_trainer_from_args(dataset_name_or_id: Union[int, str],
     plans = load_json(plans_file)
     dataset_json = load_json(join(preprocessed_dataset_folder_base, 'dataset.json'))
     nnunet_trainer = nnunet_trainer(plans=plans, configuration=configuration, fold=fold,
-                                    dataset_json=dataset_json, unpack_dataset=not use_compressed, TS=TS,
+                                    dataset_json=dataset_json, unpack_dataset=not use_compressed, TS=TS, IR=IR,
                                     pretrained_weights=pretrained_weights, device=device)
     return nnunet_trainer
 
@@ -97,10 +98,10 @@ def maybe_load_checkpoint(nnunet_trainer: nnUNetTrainer, continue_training: bool
                 nnunet_trainer.initialize()
             load_pretrained_weights(nnunet_trainer.network, pretrained_weights_file, verbose=True)
             # TS: no change for .pth
-            import shutil
-            expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_final.pth")
-            print(f"Shuffle {pretrained_weights_file} → {expected_checkpoint_file}")
-            shutil.copyfile(pretrained_weights_file, expected_checkpoint_file)
+            # import shutil
+            # expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_final.pth")
+            # print(f"Shuffle {pretrained_weights_file} → {expected_checkpoint_file}")
+            # shutil.copyfile(pretrained_weights_file, expected_checkpoint_file)
         expected_checkpoint_file = None
 
     if expected_checkpoint_file is not None:
@@ -157,6 +158,7 @@ def run_training(dataset_name_or_id: Union[str, int],
                  disable_checkpointing: bool = False,
                  val_with_best: bool = False,
                  TS: bool = False,
+                 IR: bool = False,
                  device: torch.device = torch.device('cuda')):
     if plans_identifier == 'nnUNetPlans':
         print("\n############################\n"
@@ -203,7 +205,7 @@ def run_training(dataset_name_or_id: Union[str, int],
                  join=True)
     else:
         nnunet_trainer = get_trainer_from_args(dataset_name_or_id, configuration, fold, trainer_class_name,
-                                               plans_identifier, use_compressed_data, TS, pretrained_weights, device=device)
+                                               plans_identifier, use_compressed_data, TS, IR, pretrained_weights, device=device)
 
         if disable_checkpointing:
             nnunet_trainer.disable_checkpointing = disable_checkpointing
@@ -218,10 +220,16 @@ def run_training(dataset_name_or_id: Union[str, int],
 
         if not only_run_validation:
             nnunet_trainer.run_training()
-
-        if val_with_best:
-            nnunet_trainer.load_checkpoint(join(nnunet_trainer.output_folder, 'checkpoint_best.pth'))
-        nnunet_trainer.perform_actual_validation(export_validation_probabilities)
+        # JJ: not validation
+        if TS:
+            print("JJ, Train+TS is done~~")
+        elif IR:
+            print("JJ, Train+IR is done~~")
+        else:
+            print("JJ, Train is done~~")
+        # if val_with_best:
+        #     nnunet_trainer.load_checkpoint(join(nnunet_trainer.output_folder, 'checkpoint_best.pth'))
+        # nnunet_trainer.perform_actual_validation(export_validation_probabilities)
 
 
 def run_training_entry():
@@ -267,6 +275,8 @@ def run_training_entry():
                          "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_train [...] instead!")
     parser.add_argument('--TS', action='store_true', required=False,
                         help='Temperature Scaling from pretrained model.')
+    parser.add_argument('--IR', action='store_true', required=False,
+                        help='Isotonic Regression.')
     args = parser.parse_args()
 
     assert args.device in ['cpu', 'cuda', 'mps'], f'-device must be either cpu, mps or cuda. Other devices are not tested/supported. Got: {args.device}.'
@@ -284,7 +294,7 @@ def run_training_entry():
         device = torch.device('mps')
 
     run_training(args.dataset_name_or_id, args.configuration, args.fold, args.tr, args.p, args.pretrained_weights,
-                 args.num_gpus, args.use_compressed, args.npz, args.c, args.val, args.disable_checkpointing, args.val_best,args.TS,
+                 args.num_gpus, args.use_compressed, args.npz, args.c, args.val, args.disable_checkpointing, args.val_best,args.TS,args.IR,
                  device=device)
 
 

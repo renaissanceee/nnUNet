@@ -30,8 +30,9 @@ def plot_histogram_bias(values, title, xlabel, save_path, color):
     plt.title(title, fontsize=font_size)
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.xlim(0, 0.2)
-    plt.ylim(0, 70)
-    plt.yticks(np.arange(0, 71, 10))  # 设置y轴刻度，步进为10
+    plt.ylim(0, 60) # 70
+    # plt.yticks(np.arange(0, 71, 10))  # 设置y轴刻度，步进为10
+    plt.yticks(np.arange(0, 60, 10))
     ax.tick_params(axis='x', labelsize=name_size)
     ax.tick_params(axis='y', labelsize=name_size)
     plt.tight_layout()
@@ -64,8 +65,9 @@ def plot_histogram_range(values, title, xlabel, save_path, color):
     plt.title(title, fontsize=font_size)
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.xlim(0, 1)
-    plt.ylim(0, 50)
-    plt.yticks(np.arange(0, 50, 10))  # 设置y轴刻度，步进为10
+    plt.ylim(0, 30) # 50
+    # plt.yticks(np.arange(0, 50, 10))  # 设置y轴刻度，步进为10
+    plt.yticks(np.arange(0, 30, 5))
     ax.tick_params(axis='x', labelsize=name_size)
     ax.tick_params(axis='y', labelsize=name_size)
     plt.tight_layout()
@@ -122,7 +124,7 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
     font_size, name_size = 18, 14
     ax.set_xticks(x)
     ax.set_xticklabels(case_ids, rotation=45, ha='center', fontsize=name_size)
-    ax.set_facecolor('#e6e9f0')  # 浅薰衣草
+    ax.set_facecolor('#e6e9f0') 
     ax.set_xlabel('Volume', fontsize=font_size)
     ax.set_ylabel('Ratio', fontsize=font_size)
     ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=font_size)  # outside
@@ -184,6 +186,7 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
     font_size, name_size = 18, 14
     ax.set_xticks(x)
     ax.set_xticklabels(case_ids, rotation=45, ha='center', fontsize=name_size)
+    ax.set_facecolor('#e6e9f0')  
     ax.set_xlabel('Volume', fontsize=font_size)
     ax.set_ylabel('Ratio', fontsize=font_size)
     ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=font_size)

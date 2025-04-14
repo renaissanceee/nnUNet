@@ -77,12 +77,13 @@ from nnunetv2.training.nnUNetTrainer.nested_cross_val_utils import copy_brats_fr
 
 class nnUNetTrainer(object):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
-                 TS: bool = True, pretrained_weights: Optional[str] = None,
+                 TS: bool = True, IR: bool = False, pretrained_weights: Optional[str] = None,
                  device: torch.device = torch.device('cuda')):
 
         self.is_ddp = dist.is_available() and dist.is_initialized()
         self.local_rank = 0 if not self.is_ddp else dist.get_rank()
         self.TS = TS
+        self.IR = IR
         self.device = device
 
         # print what device we are using
@@ -148,7 +149,7 @@ class nnUNetTrainer(object):
         self.num_val_iterations_per_epoch = 50
         # self.num_epochs = 50 #100 #1000
         self.num_epochs = 100
-        self.num_TS_epochs = 10
+        self.num_TS_epochs = 3
         
         self.current_epoch = 0
         self.enable_deep_supervision = True
@@ -162,7 +163,7 @@ class nnUNetTrainer(object):
         self.network = None  # -> self.build_network_architecture()
         self.optimizer = self.lr_scheduler = None  # -> self.initialize
         self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
-        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=100)  # JJ: 50
+        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=50)
         self.grad_scaler = GradScaler() if self.device.type == 'cuda' else None
         self.loss = None  # -> self.initialize
 
@@ -618,14 +619,14 @@ class nnUNetTrainer(object):
         set_val_folder_img = join(self.raw_dataset_folder_base, "imagesVal", "fold_" + str(self.fold))
         set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_" + str(self.fold))
         set_train_folder_label = join(self.raw_dataset_folder_base, "labelsTr") # labels
-        set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal")
+        set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal", "fold_" + str(self.fold))
         set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
 
         # val_keys (used for test-set)
         copy_brats_from_Tr_to_TsVal(ts_keys, set_train_folder_img, set_train_folder_label,
                          set_test_folder_img, set_test_folder_label, modalities=4)
         ###########################
-        if self.TS:
+        if self.TS or args.IR:
             " imagesVal/labelsVal "
             # resplit tr_keys=tr_keys(80%)+val_keys(20%)
             tr_keys, val_keys = split_nested_keys(tr_keys, val_ratio=0.2, seed=12345)# 20% val, 80% train
@@ -634,7 +635,7 @@ class nnUNetTrainer(object):
             copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder_label,
                                         set_val_folder_img, set_val_folder_label, modalities=4)
         else:
-            pritn("no TS ?")
+            print("no holdout set for post-hoc !!!")
             val_keys = tr_keys
         ###########################
 
@@ -986,7 +987,7 @@ class nnUNetTrainer(object):
         if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
             os.remove(join(self.output_folder, "checkpoint_latest.pth"))
 
-        if not self.TS:
+        if not self.TS and not self.IR:
             # shut down dataloaders
             old_stdout = sys.stdout
             with open(os.devnull, 'w') as f:
@@ -1031,6 +1032,15 @@ class nnUNetTrainer(object):
             f"Current learning rate: {np.round(self.optimizer.param_groups[0]['lr'], decimals=5)}")
         # lrs are the same for all workers so we don't need to gather them in case of DDP training
         self.logger.log('lrs', self.optimizer.param_groups[0]['lr'], self.current_epoch)
+
+    def on_train_epoch_start_TS(self):
+        self.network.train()
+        self.lr_scheduler.step(self.current_epoch)
+        self.print_to_log_file('')
+        self.print_to_log_file(f'Epoch {self.current_epoch}')
+        self.print_to_log_file(
+            f"Current learning rate: {np.round(self.optimizer_TS.param_groups[0]['lr'], decimals=5)}")
+        self.logger.log('lrs', self.optimizer_TS.param_groups[0]['lr'], self.current_epoch)
 
     def train_step(self, batch: dict) -> dict:
         data = batch['data']
@@ -1371,7 +1381,7 @@ class nnUNetTrainer(object):
         self.print_to_log_file('train_loss', np.round(self.logger.my_fantastic_logging['train_losses'][-1], decimals=4))
         self.print_to_log_file(
             f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], decimals=2)} s")
-        self.print_to_log_file('temperature', self.temperature)  # TS
+        self.print_to_log_file('temperature', self.temperature.item())  # TS
         if self.local_rank == 0:
             self.logger.plot_progress_png(self.output_folder)
         self.current_epoch += 1
@@ -1609,13 +1619,44 @@ class nnUNetTrainer(object):
             self.print_to_log_file("load a pretrained nnUNet ...")
 
         if self.TS: # -> post-hoc
-            self.print_to_log_file("train from post-hoc ...")
+            self.print_to_log_file("train from post-hoc TS ...")
             for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
                 self.on_epoch_start()
-                self.on_train_epoch_start()
+                self.on_train_epoch_start_TS()
                 train_outputs = []
                 for batch_id in range(self.num_iterations_per_epoch):
                     train_outputs.append(self.train_step_TS(next(self.dataloader_val)))# TS
                 self.on_train_epoch_end(train_outputs)
                 self.on_epoch_end_TS()
             self.on_train_end_TS()
+        # elif self.IR:
+        #     iso_reg = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+        #     scaler = MinMaxScaler()
+        #     val_data = next(self.dataloader_val)
+        #     scores_val, labels_val = val_data['data'], val_data['target']
+        #     scores_test = 
+        #     ## probabilities ##
+        #     npz_path = os.path.join(preds_root, file_name + '.npz')
+        #     probs = np.load(npz_path)
+        #     probs = probs['probabilities']  # (3,155,240,240)
+        # 
+        #     ## preds ##
+        #     nii_path = os.path.join(preds_root, file_name + '.nii.gz')
+        #     preds = nib.load(nii_path).get_fdata()  # np, [240,240,155] belong to labels {0,1,2,3}, due  to overwritten
+        
+        
+        
+        
+        #     scaled_scores_val = scaler.fit_transform(scores_val)
+        #
+        #     calibrated_scores_test = torch.zeros_like(scores_test)
+        #     for class_idx in range(scores_test.shape[1]):
+        #         mask = (labels_val == class_idx)
+        #         iso_reg.fit(scaled_scores_val[:, class_idx], mask)
+        #         calibrated_scores_test[:, class_idx] = iso_reg.transform(scores_test[:, class_idx])
+        #
+        #     calibrated_scores_test = scaler.inverse_transform(calibrated_scores_test)
+        #     calibrated_scores_test = torch.clamp(torch.tensor(calibrated_scores_test), min=EPS, max=1 - EPS)
+
+
+            

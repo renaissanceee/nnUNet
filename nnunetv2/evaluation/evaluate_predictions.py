@@ -106,7 +106,6 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
 
 
     for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
-        # import pdb;pdb.set_trace()
         results['metrics'][r] = {}
         mask_ref = region_or_label_to_mask(seg_ref, r)
         mask_pred = region_or_label_to_mask(seg_pred, r)
@@ -181,8 +180,10 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
     recursive_fix_for_json_export(means)
     recursive_fix_for_json_export(foreground_mean)
     result = {'metric_per_case': results, 'mean': means, 'foreground_mean': foreground_mean}
+    folder_save=join(folder_pred, "seg_metrics")
+    os.makedirs(folder_save, exist_ok=True)
     if output_file is not None:
-        save_summary_json(result, output_file)
+        save_summary_json(result, join(folder_save, output_file))
     return result
     # print('DONE')
 
@@ -239,7 +240,12 @@ def evaluate_folder_entry_point():
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
     parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--TS', action='store_true',
+                        help='temperature_scaling')
     args = parser.parse_args()
+    if args.TS:
+        basename = os.path.basename(args.pred_folder)
+        args.pred_folder = args.pred_folder.replace(basename, basename+'_TS')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np, chill=args.chill)
 
 

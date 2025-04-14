@@ -1,7 +1,7 @@
 import os
 from copy import deepcopy
 from typing import Union, List
-
+from sklearn.isotonic import IsotonicRegression
 import numpy as np
 import torch
 from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice
@@ -73,24 +73,32 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
                                   configuration_manager: ConfigurationManager,
                                   plans_manager: PlansManager,
                                   dataset_json_dict_or_file: Union[dict, str], output_file_truncated: str,
-                                  save_probabilities: bool = False):
+                                  save_probabilities: bool = False,
+                                  IR: bool = False):
     if isinstance(dataset_json_dict_or_file, str):
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
     label_manager = plans_manager.get_label_manager(dataset_json_dict_or_file)
-    # import pdb;pdb.set_trace()
     ret = convert_predicted_logits_to_segmentation_with_correct_shape(
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
         return_probabilities=save_probabilities
     )
     del predicted_array_or_file
-
     # save
     if save_probabilities: # JJ
         segmentation_final, probabilities_final = ret
+        ## IR ##
+        if IR:
+            # confidences = probs[np.arange(len(probs)), preds]
+            # correct = (preds == labels.cpu().numpy()).astype(int)
+            # iso_reg = IsotonicRegression(out_of_bounds='clip')
+            # iso_reg.fit(confidences, correct)
+            print("Isotonic Regression here ...")
+        #################
         np.savez_compressed(output_file_truncated + '.npz', probabilities=probabilities_final)
         save_pickle(properties_dict, output_file_truncated + '.pkl')
         del probabilities_final, ret
+
     else:
         segmentation_final = ret
         del ret

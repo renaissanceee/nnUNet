@@ -16,7 +16,7 @@ from torch import nn
 from torch._dynamo import OptimizedModule
 from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
-
+from sklearn.isotonic import IsotonicRegression
 import nnunetv2
 from nnunetv2.configuration import default_num_processes
 from nnunetv2.inference.data_iterators import PreprocessAdapterFromNpy, preprocessing_iterator_fromfiles, \
@@ -44,7 +44,8 @@ class nnUNetPredictor(object):
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
                  allow_tqdm: bool = True,
-                 temperature: Optional[float] = 1.0):
+                 temperature: Optional[float] = 1.0,
+                 IR: bool = False):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -63,6 +64,7 @@ class nnUNetPredictor(object):
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
         self.temperature=temperature
+        self.IR = IR
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -169,23 +171,22 @@ class nnUNetPredictor(object):
                                        part_id: int = 0,
                                        num_parts: int = 1,
                                        save_probabilities: bool = False,
-                                       TS=False):
-        # list_of_lists_or_source_folder -->args.i, but no test-set
-        # e.g. /staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021_holdin/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/
-        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
-        root_raw = os.environ.get('nnUNet_raw')
-        list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
-        fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
-        dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
-        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
+                                       TS: bool =False,
+                                       IR: bool =False):
 
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
                                                                                        self.dataset_json['file_ending'])
-        if not TS:
-            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace("validation","validation_wo_TS")
-
+        # base_name = os.path.basename(output_folder_or_list_of_truncated_output_files)
+        # if TS:
+        #     # 'test'->'test_TS'
+        #     output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_TS")
+        # if IR:
+        #     # 'test'->'test_IR'
+        #     output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_IR")
+        # os.makedirs(output_folder_or_list_of_truncated_output_files, exist_ok=True)
         print(f'There are {len(list_of_lists_or_source_folder)} cases in the source folder')
+
         list_of_lists_or_source_folder = list_of_lists_or_source_folder[part_id::num_parts]
         caseids = [os.path.basename(i[0])[:-(len(self.dataset_json['file_ending']) + 5)] for i in
                    list_of_lists_or_source_folder]
@@ -226,19 +227,40 @@ class nnUNetPredictor(object):
                            folder_with_segs_from_prev_stage: str = None,
                            num_parts: int = 1,
                            part_id: int = 0,
-                           TS: bool = False):
+                           TS: bool = False,
+                           IR: bool = False,):
         """
         This is nnU-Net's default function for making predictions. It works best for batch predictions
         (predicting many images at once).
         """
+        # ---------------------------------
+        ## output ##
+        base_name = os.path.basename(output_folder_or_list_of_truncated_output_files)
+        if TS: # 'test'->'test_TS'
+            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_TS")
+        if IR: # 'test'->'test_IR'
+            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_IR")
+        ## source ##
+        # list_of_lists_or_source_folder -->args.i, but no test-set
+        # e.g. /staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021_holdin/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/
+        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
+        root_raw = os.environ.get('nnUNet_raw')
+        list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
+        fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
+        dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
+        if "test" in output_folder_or_list_of_truncated_output_files:
+            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
+        elif "validation" in output_folder_or_list_of_truncated_output_files:
+            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal', fold_n)
+        else:
+            assert "Informal Path: should be validation or test"
+        # ---------------------------------
         if isinstance(output_folder_or_list_of_truncated_output_files, str):
             output_folder = output_folder_or_list_of_truncated_output_files
         elif isinstance(output_folder_or_list_of_truncated_output_files, list):
             output_folder = os.path.dirname(output_folder_or_list_of_truncated_output_files[0])
         else:
             output_folder = None
-
-        ########################
         # let's store the input arguments so that its clear what was used to generate the prediction
         if output_folder is not None:
             my_init_kwargs = {}
@@ -267,7 +289,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,
-                                                save_probabilities, TS)
+                                                save_probabilities, TS, IR)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -401,7 +423,7 @@ class nnUNetPredictor(object):
                         export_pool.starmap_async(
                             export_prediction_from_logits,
                             ((prediction, properties, self.configuration_manager, self.plans_manager,
-                              self.dataset_json, ofile, save_probabilities),)
+                              self.dataset_json, ofile, save_probabilities, self.IR),)
                         )
                     )
                 else:
@@ -425,6 +447,7 @@ class nnUNetPredictor(object):
                     print(f'done with {os.path.basename(ofile)}')
                 else:
                     print(f'\nDone with image of shape {data.shape}:')
+            # No such file or directory: 'nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/validation_TS/BraTS2021_00008.npz'
             ret = [i.get()[0] for i in r]
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
@@ -679,7 +702,8 @@ class nnUNetPredictor(object):
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
                            overwrite: bool = True,
-                           folder_with_segs_from_prev_stage: str = None, TS: bool=False):
+                           folder_with_segs_from_prev_stage: str = None,
+                                      TS: bool=False, IR: bool=False):
         """
         Just like predict_from_files but doesn't use any multiprocessing. Slow, but sometimes necessary
         """
@@ -719,7 +743,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, 0, 1,
-                                                save_probabilities,TS)
+                                                save_probabilities, TS, IR)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -810,8 +834,9 @@ def predict_entry_point_modelfolder():
                         help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
                              'jobs)')
     parser.add_argument('--TS', action='store_true', required=False, default=False,
-                        help='Temperature Scaling: replace holdin with holdout')
-
+                        help='Temperature Scaling')
+    parser.add_argument('--IR', action='store_true', required=False, default=False,
+                        help='Isotonic Regression')
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -839,19 +864,23 @@ def predict_entry_point_modelfolder():
         device = torch.device('cuda')
     else:
         device = torch.device('mps')
-
+    ## TS ##
+    temperature_from_json = None
     if args.TS:
         potential_TS_path=join(args.i, 'temperature.json')
         if os.path.exists(potential_TS_path):
             temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
             print(f"Temperature Scaling: loading {temperature_from_json}")
         else:
-            print(f"Missing json in :{potential_TS_path}")
-            print("So no TS here!")
-            temperature_from_json = None
+            raise FileNotFoundError(
+                f"Missing: {potential_TS_path}. Please check your model path."
+            )
+    ## IR ##
+    elif args.IR:
+        print("Isotonic Regression here ...")
+    ## base_model ##
     else:
-        temperature_from_json = None
-        print(f"You don't want temperature_scaling...")
+        print(f"No Post-hoc Calibration...")
 
 
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
@@ -862,7 +891,8 @@ def predict_entry_point_modelfolder():
                                 verbose=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
                                 verbose_preprocessing=args.verbose,
-                                temperature=temperature_from_json)# TS
+                                temperature=temperature_from_json,
+                                IR=args.IR)# TS
     predictor.initialize_from_trained_model_folder(args.m, args.f, args.chk)
     predictor.predict_from_files(args.i, args.o, save_probabilities=args.save_probabilities,
                                  overwrite=not args.continue_prediction,
@@ -939,6 +969,8 @@ def predict_entry_point():
                         help='suffix to indicate training settings')
     parser.add_argument('--TS', action='store_true', required=False, default=False,
                         help='Temperature Scaling: replace holdin with holdout')
+    parser.add_argument('--IR', action='store_true', required=False, default=False,
+                        help='Isotonic Regression')
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -972,19 +1004,23 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
         
+    ## TS ##
+    temperature_from_json = None
     if args.TS:
-        # potential_TS_path=join(args.i.replace("holdin","holdout"), 'temperature.json')
         potential_TS_path=join(args.i, 'temperature.json')
         if os.path.exists(potential_TS_path):
             temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
             print(f"Temperature Scaling: loading {temperature_from_json}")
         else:
-            print(f"Missing json in :{potential_TS_path}")
-            print("So no TS here!")
-            temperature_from_json = None
+            raise FileNotFoundError(
+                f"Missing: {potential_TS_path}. Please check your model path."
+            )
+    ## IR ##
+    elif args.IR:
+        print("Isotonic Regression here ...")
+    ## base_model ##
     else:
-        temperature_from_json = None
-        print(f"You don't want temperature_scaling...")
+        print(f"No Post-hoc Calibration...")
             
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
@@ -994,7 +1030,8 @@ def predict_entry_point():
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                temperature=temperature_from_json)
+                                temperature=temperature_from_json,
+                                IR= args.IR)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,

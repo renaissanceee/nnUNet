@@ -11,7 +11,7 @@ authors = [
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
-    "Intended Audience :: Developers",
+    "Intended Audience ::ratio Developers",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Healthcare Industry",
     "Programming Language :: Python :: 3",
@@ -79,6 +79,7 @@ nnUNetv2_export_model_to_zip = "nnunetv2.model_sharing.entry_points:export_pretr
 nnUNetv2_move_plans_between_datasets = "nnunetv2.experiment_planning.plans_for_pretraining.move_plans_between_datasets:entry_point_move_plans_between_datasets"
 nnUNetv2_evaluate_folder = "nnunetv2.evaluation.evaluate_predictions:evaluate_folder_entry_point"
 nnUNetv2_ratio_estimator = "nnunetv2.evaluation.ratio_estimator:evaluate_folder_entry_point"
+nnUNetv2_ratio_estimator_slice = "nnunetv2.evaluation.ratio_estimator_slice:evaluate_folder_entry_point"
 nnUNetv2_evaluate_simple = "nnunetv2.evaluation.evaluate_predictions:evaluate_simple_entry_point"
 nnUNetv2_convert_MSD_dataset = "nnunetv2.dataset_conversion.convert_MSD_dataset:entry_point"
 
