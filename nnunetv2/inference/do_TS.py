@@ -8,6 +8,8 @@ from typing import Tuple, Union, List, Optional
 import json
 import numpy as np
 import torch
+import nibabel as nib
+from torch import autocast, nn, optim
 from acvl_utils.cropping_and_padding.padding import pad_nd_image
 from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
 from batchgenerators.utilities.file_and_folder_operations import load_json, join, isfile, maybe_mkdir_p, isdir, subdirs, \
@@ -44,7 +46,7 @@ class nnUNetPredictor(object):
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
                  allow_tqdm: bool = True,
-                 temperature: Optional[float] = 1.0,
+                 temperature: Optional[float] = 1.5,
                  IR: bool = False):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
@@ -63,7 +65,12 @@ class nnUNetPredictor(object):
             perform_everything_on_device = False
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
-        self.temperature=temperature
+        self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
+        self.lr_scheduler_TS = None
+        # if self.TS=='lbfgs':
+        self.max_iter = 100
+        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=self.max_iter)
+
         self.IR = IR
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
@@ -74,7 +81,6 @@ class nnUNetPredictor(object):
         """
         if use_folds is None:
             use_folds = nnUNetPredictor.auto_detect_available_folds(model_training_output_dir, checkpoint_name)
-
         dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
         plans = load_json(join(model_training_output_dir, 'plans.json'))
         plans_manager = PlansManager(plans)
@@ -228,21 +234,13 @@ class nnUNetPredictor(object):
         # ---------------------------------
         ## output ##
         base_name = os.path.basename(output_folder_or_list_of_truncated_output_files)
-        if TS is not None: # 'test'->'test_TS'
-            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+f"_TS_{TS}") # JJ
-        if IR: # 'test'->'test_IR'
-            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_IR")
         ## source ##
         root_raw = os.environ.get('nnUNet_raw')
         list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
-        if "test" in output_folder_or_list_of_truncated_output_files:
-            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
-        elif "validation" in output_folder_or_list_of_truncated_output_files:
-            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal', fold_n)
-        else:
-            assert "Informal Path: should be validation or test"
+        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal',fold_n) # TS
+        labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal', fold_n)  # TS
         # ---------------------------------
         if isinstance(output_folder_or_list_of_truncated_output_files, str):
             output_folder = output_folder_or_list_of_truncated_output_files
@@ -281,13 +279,11 @@ class nnUNetPredictor(object):
                                                 save_probabilities, TS, IR)
         if len(list_of_lists_or_source_folder) == 0:
             return
-
         data_iterator = self._internal_get_data_iterator_from_lists_of_filenames(list_of_lists_or_source_folder,
                                                                                  seg_from_prev_stage_files,
                                                                                  output_filename_truncated,
                                                                                  num_processes_preprocessing)
-
-        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export)
+        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export, TS, labels_folder)
 
     def _internal_get_data_iterator_from_lists_of_filenames(self,
                                                             input_list_of_lists: List[List[str]],
@@ -298,19 +294,6 @@ class nnUNetPredictor(object):
                                                 output_filenames_truncated, self.plans_manager, self.dataset_json,
                                                 self.configuration_manager, num_processes, self.device.type == 'cuda',
                                                 self.verbose_preprocessing)
-        # preprocessor = self.configuration_manager.preprocessor_class(verbose=self.verbose_preprocessing)
-        # # hijack batchgenerators, yo
-        # # we use the multiprocessing of the batchgenerators dataloader to handle all the background worker stuff. This
-        # # way we don't have to reinvent the wheel here.
-        # num_processes = max(1, min(num_processes, len(input_list_of_lists)))
-        # ppa = PreprocessAdapter(input_list_of_lists, seg_from_prev_stage_files, preprocessor,
-        #                         output_filenames_truncated, self.plans_manager, self.dataset_json,
-        #                         self.configuration_manager, num_processes)
-        # if num_processes == 0:
-        #     mta = SingleThreadedAugmenter(ppa, None)
-        # else:
-        #     mta = MultiThreadedAugmenter(ppa, None, num_processes, 1, None, pin_memory=pin_memory)
-        # return mta
 
     def get_data_iterator_from_raw_npy_data(self,
                                             image_or_list_of_images: Union[np.ndarray, List[np.ndarray]],
@@ -372,15 +355,19 @@ class nnUNetPredictor(object):
     def predict_from_data_iterator(self,
                                    data_iterator,
                                    save_probabilities: bool = False,
-                                   num_processes_segmentation_export: int = default_num_processes):
+                                   num_processes_segmentation_export: int = default_num_processes,
+                                   TS: str = 'lbfgs',
+                                   labels_folder: str = None):
         """
         each element returned by data_iterator must be a dict with 'data', 'ofile' and 'data_properties' keys!
         If 'ofile' is None, the result will be returned instead of written to a file
         """
+
         with multiprocessing.get_context("spawn").Pool(num_processes_segmentation_export) as export_pool:
-            worker_list = [i for i in export_pool._pool]
-            r = []
+            logits, labels = [],[]
+            # i = 0
             for preprocessed in data_iterator:
+                # i+=1
                 data = preprocessed['data']
                 if isinstance(data, str):
                     delfile = data
@@ -388,56 +375,68 @@ class nnUNetPredictor(object):
                     os.remove(delfile)
 
                 ofile = preprocessed['ofile']
-                if ofile is not None:
-                    print(f'\nPredicting {os.path.basename(ofile)}:')
-                else:
-                    print(f'\nPredicting image of shape {data.shape}:')
-
-                print(f'perform_everything_on_device: {self.perform_everything_on_device}')
-
+                print(ofile)
+                file_name = os.path.basename(ofile)
                 properties = preprocessed['data_properties']
+                bbox = properties['bbox_used_for_cropping']
+                print(f'\nPredicting {os.path.basename(ofile)}:')
+                # preds
+                prediction = self.predict_logits_from_preprocessed_data(data).permute(1,2,3,0) # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
+                # labels
+                img = nib.load(join(labels_folder, file_name+self.dataset_json['file_ending']))
+                label = torch.from_numpy(img.get_fdata()).permute(2, 0, 1).to('cuda')
+                label_crop = label[bbox[0][0]:bbox[0][1],bbox[1][0]:bbox[1][1],bbox[2][0]:bbox[2][1]]
+                logits.append(prediction.reshape(-1, 4))
+                labels.append(label_crop.reshape(-1))
+                # if i>2:break
+                # if ofile is not None:
+                #     print('sending off prediction to background worker for resampling and export')
+                #     r.append(
+                #         export_pool.starmap_async(
+                #             export_prediction_from_logits,
+                #             ((prediction, properties, self.configuration_manager, self.plans_manager,
+                #               self.dataset_json, ofile, save_probabilities, self.IR),)
+                #         )
+                #     )
+                # else:
+                #     print('sending off prediction to background worker for resampling')
+                #     r.append(
+                #         export_pool.starmap_async(
+                #             convert_predicted_logits_to_segmentation_with_correct_shape, (
+                #                 (prediction, self.plans_manager,
+                #                  self.configuration_manager, self.label_manager,
+                #                  properties,
+                #                  save_probabilities),)
+                #         )
+                #     )
+                # if ofile is not None:
+                #     print(f'done with {os.path.basename(ofile)}')
+                # else:
+                #     print(f'\nDone with image of shape {data.shape}:')
 
-                # let's not get into a runaway situation where the GPU predicts so fast that the disk has to b swamped with
-                # npy files
-                proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
-                while not proceed:
-                    sleep(0.1)
-                    proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
-
-                prediction = self.predict_logits_from_preprocessed_data(data).cpu() # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
-
-                if ofile is not None:
-                    print('sending off prediction to background worker for resampling and export')
-                    r.append(
-                        export_pool.starmap_async(
-                            export_prediction_from_logits,
-                            ((prediction, properties, self.configuration_manager, self.plans_manager,
-                              self.dataset_json, ofile, save_probabilities, self.IR),)
-                        )
-                    )
-                else:
-                    print('sending off prediction to background worker for resampling')
-                    r.append(
-                        export_pool.starmap_async(
-                            convert_predicted_logits_to_segmentation_with_correct_shape, (
-                                (prediction, self.plans_manager,
-                                 self.configuration_manager, self.label_manager,
-                                 properties,
-                                 save_probabilities),)
-                        )
-                    )
-                if ofile is not None:
-                    print(f'done with {os.path.basename(ofile)}')
-                else:
-                    print(f'\nDone with image of shape {data.shape}:')
-            ret = [i.get()[0] for i in r]
+            # ret = [i.get()[0] for i in r]
+            ## TS
+            logits_all, labels_all = torch.cat(logits, dim=0).to('cuda'), torch.cat(labels,dim=0).long().to('cuda')
+            nll_criterion = nn.CrossEntropyLoss()# .cuda()
+            def eval():
+                self.optimizer_TS.zero_grad()
+                loss = nll_criterion(logits_all/self.temperature, labels_all)
+                loss.backward()
+                return loss
+            self.optimizer_TS.step(eval)
+            temperature = self.temperature.detach().cpu().item()
+            print(f'temperature: {temperature}')
+            result_as_list = {}
+            result_as_list['temperature'] = [temperature]
+            root = os.path.dirname(ofile)
+            save_json(result_as_list, join(os.path.dirname(root), f"temperature_{TS}_{self.max_iter}.json")) # two times, remove test/ and filename
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
             data_iterator._finish()
 
-        compute_gaussian.cache_clear()# clear lru cache
+        compute_gaussian.cache_clear()        # clear lru cache
         empty_cache(self.device)# clear device cache
-        return ret
+        return temperature
 
     def predict_single_npy_array(self, input_image: np.ndarray, image_properties: dict,
                                  segmentation_previous_stage: np.ndarray = None,
@@ -555,7 +554,6 @@ class nnUNetPredictor(object):
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
         prediction = self.network(x)
-        # print(self.temperature, '!!!') # JJ
         if self.temperature is not None:
             prediction = prediction / self.temperature  # TS
 
@@ -637,12 +635,6 @@ class nnUNetPredictor(object):
 
             empty_cache(self.device)
 
-            # Autocast can be annoying
-            # If the device_type is 'cpu' then it's slow as heck on some CPUs (no auto bfloat16 support detection)
-            # and needs to be disabled.
-            # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False
-            # is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
-            # So autocast will only be active if we have a cuda device.
             with torch.autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
                 assert input_image.ndim == 4, 'input_image must be a 4D np.ndarray or torch.Tensor (c, x, y, z)'
 
@@ -677,7 +669,7 @@ class nnUNetPredictor(object):
                 predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
         return predicted_logits
 
-    def predict_from_files_sequential(self, # JJ: no_use
+    def predict_from_files_sequential(self,
                            list_of_lists_or_source_folder: Union[str, List[List[str]]],
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
@@ -764,123 +756,6 @@ class nnUNetPredictor(object):
         empty_cache(self.device)
         return ret
 
-
-def predict_entry_point_modelfolder(): # JJ: no_use
-    import argparse
-    parser = argparse.ArgumentParser(description='Use this to run inference with nnU-Net. This function is used when '
-                                                 'you want to manually specify a folder containing a trained nnU-Net '
-                                                 'model. This is useful when the nnunet environment variables '
-                                                 '(nnUNet_results) are not set.')
-    parser.add_argument('-i', type=str, required=True,
-                        help='input folder. Remember to use the correct channel numberings for your files (_0000 etc). '
-                             'File endings must be the same as the training dataset!')
-    parser.add_argument('-o', type=str, required=True,
-                        help='Output folder. If it does not exist it will be created. Predicted segmentations will '
-                             'have the same name as their source images.')
-    parser.add_argument('-m', type=str, required=True,
-                        help='Folder in which the trained model is. Must have subfolders fold_X for the different '
-                             'folds you trained')
-    parser.add_argument('-f', nargs='+', type=str, required=False, default=(0, 1, 2, 3, 4),
-                        help='Specify the folds of the trained model that should be used for prediction. '
-                             'Default: (0, 1, 2, 3, 4)')
-    parser.add_argument('-step_size', type=float, required=False, default=0.5,
-                        help='Step size for sliding window prediction. The larger it is the faster but less accurate '
-                             'the prediction. Default: 0.5. Cannot be larger than 1. We recommend the default.')
-    parser.add_argument('--disable_tta', action='store_true', required=False, default=False,
-                        help='Set this flag to disable test time data augmentation in the form of mirroring. Faster, '
-                             'but less accurate inference. Not recommended.')
-    parser.add_argument('--verbose', action='store_true', help="Set this if you like being talked to. You will have "
-                                                               "to be a good listener/reader.")
-    parser.add_argument('--save_probabilities', action='store_true',
-                        help='Set this to export predicted class "probabilities". Required if you want to ensemble '
-                             'multiple configurations.')
-    parser.add_argument('--continue_prediction', '--c', action='store_true',
-                        help='Continue an aborted previous prediction (will not overwrite existing files)')
-    parser.add_argument('-chk', type=str, required=False, default='checkpoint_final.pth',
-                        help='Name of the checkpoint you want to use. Default: checkpoint_final.pth')
-    parser.add_argument('-npp', type=int, required=False, default=3,
-                        help='Number of processes used for preprocessing. More is not always better. Beware of '
-                             'out-of-RAM issues. Default: 3')
-    parser.add_argument('-nps', type=int, required=False, default=3,
-                        help='Number of processes used for segmentation export. More is not always better. Beware of '
-                             'out-of-RAM issues. Default: 3')
-    parser.add_argument('-prev_stage_predictions', type=str, required=False, default=None,
-                        help='Folder containing the predictions of the previous stage. Required for cascaded models.')
-    parser.add_argument('-device', type=str, default='cuda', required=False,
-                        help="Use this to set the device the inference should run with. Available options are 'cuda' "
-                             "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
-                             "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_predict [...] instead!")
-    parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
-                        help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
-                             'jobs)')
-    parser.add_argument('--TS', type=str, required=False, default=None,help='Temperature Scaling')
-    parser.add_argument('--IR', action='store_true', required=False, default=False,
-                        help='Isotonic Regression')
-    print(
-        "\n#######################################################################\nPlease cite the following paper "
-        "when using nnU-Net:\n"
-        "Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). "
-        "nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. "
-        "Nature methods, 18(2), 203-211.\n#######################################################################\n")
-
-    args = parser.parse_args()
-    args.f = [i if i == 'all' else int(i) for i in args.f]
-
-    if not isdir(args.o):
-        maybe_mkdir_p(args.o)
-
-    assert args.device in ['cpu', 'cuda',
-                           'mps'], f'-device must be either cpu, mps or cuda. Other devices are not tested/supported. Got: {args.device}.'
-    if args.device == 'cpu':
-        # let's allow torch to use hella threads
-        import multiprocessing
-        torch.set_num_threads(multiprocessing.cpu_count())
-        device = torch.device('cpu')
-    elif args.device == 'cuda':
-        # multithreading in torch doesn't help nnU-Net if run on GPU
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
-        device = torch.device('cuda')
-    else:
-        device = torch.device('mps')
-    ## TS ##
-    temperature_from_json = None
-    if args.TS is not None:
-        # potential_TS_path=join(args.i, 'temperature.json')
-        potential_TS_path = join(args.i, f'temperature_{args.TS}.json') # JJ
-        print(f'loading temperature from {potential_TS_path}')
-        if os.path.exists(potential_TS_path):
-            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-            print(f"Temperature Scaling: loading {temperature_from_json}")
-        else:
-            raise FileNotFoundError(
-                f"Missing: {potential_TS_path}. Please check your model path."
-            )
-    ## IR ##
-    elif args.IR:
-        print("Isotonic Regression here ...")
-    ## base_model ##
-    else:
-        print(f"No Post-hoc Calibration...")
-
-
-    predictor = nnUNetPredictor(tile_step_size=args.step_size,
-                                use_gaussian=True,
-                                use_mirroring=not args.disable_tta,
-                                perform_everything_on_device=True,
-                                device=device,
-                                verbose=args.verbose,
-                                allow_tqdm=not args.disable_progress_bar,
-                                verbose_preprocessing=args.verbose,
-                                temperature=temperature_from_json,
-                                IR=args.IR)# TS
-    predictor.initialize_from_trained_model_folder(args.m, args.f, args.chk)
-    predictor.predict_from_files(args.i, args.o, save_probabilities=args.save_probabilities,
-                                 overwrite=not args.continue_prediction,
-                                 num_processes_preprocessing=args.npp,
-                                 num_processes_segmentation_export=args.nps,
-                                 folder_with_segs_from_prev_stage=args.prev_stage_predictions,
-                                 num_parts=1, part_id=0, TS=args.TS)
 
 
 def predict_entry_point():
@@ -985,24 +860,8 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
 
-    ## TS ##
-    temperature_from_json = None
-    if args.TS is not None:
-        potential_TS_path = join(args.i, f'temperature_{args.TS}.json')
-        print(f'loading temperature from {potential_TS_path}')
-        if os.path.exists(potential_TS_path):
-            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-            print(f"Temperature Scaling: loading {temperature_from_json}")
-        else:
-            raise FileNotFoundError(
-                f"Missing: {potential_TS_path}. Please check your model path."
-            )
-    ## IR ##
-    elif args.IR:
-        print("Isotonic Regression here ...")
-    ## base_model ##
-    else:
-        print(f"No Post-hoc Calibration...")
+
+    print(f"Post-hoc for temperature ...")
 
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
@@ -1012,8 +871,8 @@ def predict_entry_point():
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                temperature=temperature_from_json,
-                                IR= args.IR)
+                                temperature=None,
+                                IR = None)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,
@@ -1026,7 +885,6 @@ def predict_entry_point():
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
                                  num_parts=args.num_parts,
                                  part_id=args.part_id,TS=args.TS)
-
 
 
 if __name__ == '__main__':

@@ -74,7 +74,7 @@ class nnUNetPredictor(object):
         """
         if use_folds is None:
             use_folds = nnUNetPredictor.auto_detect_available_folds(model_training_output_dir, checkpoint_name)
-
+        import pdb;pdb.set_trace()
         dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
         plans = load_json(join(model_training_output_dir, 'plans.json'))
         plans_manager = PlansManager(plans)
@@ -198,6 +198,7 @@ class nnUNetPredictor(object):
         if not overwrite and output_filename_truncated is not None:
             tmp = [isfile(i + self.dataset_json['file_ending']) for i in output_filename_truncated]
             if save_probabilities:
+                import pdb;pdb.set_trace()
                 tmp2 = [isfile(i + '.npz') for i in output_filename_truncated]
                 tmp = [i and j for i, j in zip(tmp, tmp2)]
             not_existing_indices = [i for i, j in enumerate(tmp) if not j]
@@ -233,6 +234,9 @@ class nnUNetPredictor(object):
         if IR: # 'test'->'test_IR'
             output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_IR")
         ## source ##
+        # list_of_lists_or_source_folder -->args.i, but no test-set
+        # e.g. /staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021_holdin/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/
+        # list_of_lists_or_source_folder = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw/Dataset137_BraTS2021/imagesTs/fold_0"
         root_raw = os.environ.get('nnUNet_raw')
         list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
@@ -416,6 +420,12 @@ class nnUNetPredictor(object):
                         )
                     )
                 else:
+                    # convert_predicted_logits_to_segmentation_with_correct_shape(
+                    #             prediction, self.plans_manager,
+                    #              self.configuration_manager, self.label_manager,
+                    #              properties,
+                    #              save_probabilities)
+
                     print('sending off prediction to background worker for resampling')
                     r.append(
                         export_pool.starmap_async(
@@ -430,13 +440,17 @@ class nnUNetPredictor(object):
                     print(f'done with {os.path.basename(ofile)}')
                 else:
                     print(f'\nDone with image of shape {data.shape}:')
+            # No such file or directory: 'nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/validation_TS/BraTS2021_00008.npz'
+            # No such file or directory: 'nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d/fold_0/test/BraTS2021_01231.pkl'
             ret = [i.get()[0] for i in r]
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
             data_iterator._finish()
 
-        compute_gaussian.cache_clear()# clear lru cache
-        empty_cache(self.device)# clear device cache
+        # clear lru cache
+        compute_gaussian.cache_clear()
+        # clear device cache
+        empty_cache(self.device)
         return ret
 
     def predict_single_npy_array(self, input_image: np.ndarray, image_properties: dict,
@@ -677,7 +691,7 @@ class nnUNetPredictor(object):
                 predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
         return predicted_logits
 
-    def predict_from_files_sequential(self, # JJ: no_use
+    def predict_from_files_sequential(self,
                            list_of_lists_or_source_folder: Union[str, List[List[str]]],
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
@@ -765,7 +779,7 @@ class nnUNetPredictor(object):
         return ret
 
 
-def predict_entry_point_modelfolder(): # JJ: no_use
+def predict_entry_point_modelfolder():
     import argparse
     parser = argparse.ArgumentParser(description='Use this to run inference with nnU-Net. This function is used when '
                                                  'you want to manually specify a folder containing a trained nnU-Net '
@@ -962,7 +976,7 @@ def predict_entry_point():
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
     # model_folder = get_output_folder(args.d, args.tr, args.p, args.c, suffix=args.suffix)
-    model_folder = args.i.replace(args.suffix,'') if args.suffix else args.i.replace(f'/fold_{args.f[0]}', '')
+    model_folder = args.i.replace(args.suffix,"")# JJ:
 
     if not isdir(args.o):
         maybe_mkdir_p(args.o)
@@ -988,6 +1002,7 @@ def predict_entry_point():
     ## TS ##
     temperature_from_json = None
     if args.TS is not None:
+        # potential_TS_path=join(args.i, 'temperature.json')
         potential_TS_path = join(args.i, f'temperature_{args.TS}.json')
         print(f'loading temperature from {potential_TS_path}')
         if os.path.exists(potential_TS_path):

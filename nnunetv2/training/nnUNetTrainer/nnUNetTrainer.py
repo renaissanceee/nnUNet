@@ -48,7 +48,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
-from nnunetv2.evaluation.ratio_estimator import get_ece_kde_1e4_train
 from nnunetv2.inference.export_prediction import export_prediction_from_logits, resample_and_save
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
@@ -149,7 +148,7 @@ class nnUNetTrainer(object):
         self.num_val_iterations_per_epoch = 50
         # self.num_epochs = 50 #100 #1000
         self.num_epochs = 100
-        self.num_TS_epochs = 3
+        self.num_TS_epochs = 10 # 3
         
         self.current_epoch = 0
         self.enable_deep_supervision = True
@@ -163,7 +162,15 @@ class nnUNetTrainer(object):
         self.network = None  # -> self.build_network_architecture()
         self.optimizer = self.lr_scheduler = None  # -> self.initialize
         self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
-        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=50)
+        self.lr_scheduler_TS = None
+        if self.TS=='lbfgs':
+            self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=50)
+        elif self.TS=='adam':
+            self.optimizer_TS = optim.Adam([self.temperature], lr=0.01)
+            self.lr_scheduler_TS = PolyLRScheduler(self.optimizer_TS, 0.01, self.num_TS_epochs)
+        elif self.TS=='sgd':
+            self.optimizer_TS = optim.SGD([self.temperature], lr=0.01, momentum=0.9)
+            self.lr_scheduler_TS = PolyLRScheduler(self.optimizer_TS, 0.01, self.num_TS_epochs)
         self.grad_scaler = GradScaler() if self.device.type == 'cuda' else None
         self.loss = None  # -> self.initialize
 
@@ -626,7 +633,7 @@ class nnUNetTrainer(object):
         copy_brats_from_Tr_to_TsVal(ts_keys, set_train_folder_img, set_train_folder_label,
                          set_test_folder_img, set_test_folder_label, modalities=4)
         ###########################
-        if self.TS or args.IR:
+        if self.TS is not None or self.IR:
             " imagesVal/labelsVal "
             # resplit tr_keys=tr_keys(80%)+val_keys(20%)
             tr_keys, val_keys = split_nested_keys(tr_keys, val_ratio=0.2, seed=12345)# 20% val, 80% train
@@ -987,7 +994,7 @@ class nnUNetTrainer(object):
         if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
             os.remove(join(self.output_folder, "checkpoint_latest.pth"))
 
-        if not self.TS and not self.IR:
+        if self.TS is None and not self.IR:
             # shut down dataloaders
             old_stdout = sys.stdout
             with open(os.devnull, 'w') as f:
@@ -1007,7 +1014,8 @@ class nnUNetTrainer(object):
         # temperature.json
         result_as_list={}
         result_as_list['temperature'] = [self.temperature.detach().cpu().item()]  # 'temperature': 1.37
-        save_json(result_as_list, join(self.output_folder, "temperature.json"))
+        # temperature.json, temperature_adam.json, temperature_sgd.json
+        save_json(result_as_list, join(self.output_folder, f"temperature_{self.TS}.json"))
 
         # shut down dataloaders
         old_stdout = sys.stdout
@@ -1035,7 +1043,7 @@ class nnUNetTrainer(object):
 
     def on_train_epoch_start_TS(self):
         self.network.train()
-        self.lr_scheduler.step(self.current_epoch)
+        self.lr_scheduler_TS.step(self.current_epoch)
         self.print_to_log_file('')
         self.print_to_log_file(f'Epoch {self.current_epoch}')
         self.print_to_log_file(
@@ -1200,13 +1208,34 @@ class nnUNetTrainer(object):
             target = target.to(self.device, non_blocking=True)
         self.optimizer.zero_grad(set_to_none=True)
         self.network.requires_grad_(False) # frozen backbone
+        import pdb;pdb.set_trace()
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             output = self.network(data)
             def eval_TS():
                 self.optimizer_TS.zero_grad()
                 l = self.loss(self.temperature_scale(output), target) # TS
                 l.backward()
-                self.optimizer.step()
+                return l
+            l = self.optimizer_TS.step(eval_TS)
+        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
+
+    def train_step_TS_lfbgs(self, batch: dict) -> dict:
+        data = batch['data']
+        target = batch['target']
+        data = data.to(self.device, non_blocking=True)
+        if isinstance(target, list):
+            target = [i.to(self.device, non_blocking=True) for i in target]
+        else:
+            target = target.to(self.device, non_blocking=True)
+        self.optimizer.zero_grad(set_to_none=True)
+        self.network.requires_grad_(False) # frozen backbone
+        import pdb;pdb.set_trace()
+        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
+            output = self.network(data)
+            def eval_TS():
+                self.optimizer_TS.zero_grad()
+                l = self.loss(self.temperature_scale(output), target) # TS
+                l.backward()
                 return l
             l = self.optimizer_TS.step(eval_TS)
         return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
@@ -1618,17 +1647,53 @@ class nnUNetTrainer(object):
         else:
             self.print_to_log_file("load a pretrained nnUNet ...")
 
-        if self.TS: # -> post-hoc
-            self.print_to_log_file("train from post-hoc TS ...")
-            for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
-                self.on_epoch_start()
-                self.on_train_epoch_start_TS()
-                train_outputs = []
-                for batch_id in range(self.num_iterations_per_epoch):
-                    train_outputs.append(self.train_step_TS(next(self.dataloader_val)))# TS
-                self.on_train_epoch_end(train_outputs)
-                self.on_epoch_end_TS()
-            self.on_train_end_TS()
+        if self.TS is not None:
+            if self.TS!='lbfgs':
+                self.print_to_log_file("train from post-hoc TS ...")
+                print(self.optimizer_TS.__class__.__name__) # Adam, SGD
+                for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
+                    self.on_epoch_start()
+                    self.on_train_epoch_start_TS()
+                    train_outputs = []
+                    for batch_id in range(self.num_iterations_per_epoch):
+                        train_outputs.append(self.train_step_TS(next(self.dataloader_val)))# TS
+                    self.on_train_epoch_end(train_outputs)
+                    self.on_epoch_end_TS()
+                self.on_train_end_TS()
+            elif self.TS=='lbfgs': # LBFGS
+                for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
+                    self.on_epoch_start()
+                    self.on_train_epoch_start_TS()
+                    train_outputs = []
+                    for batch_id in range(self.num_iterations_per_epoch):
+                        train_outputs.append(self.train_step_TS_lbfgs(next(self.dataloader_val)))# TS
+                    self.on_train_epoch_end(train_outputs)
+                    self.on_epoch_end_TS()
+    
+                self.on_train_end_TS()
+
+            # data = batch['data'].to(self.device, non_blocking=True)
+            # target = batch['target'].to(self.device, non_blocking=True)
+            # def eval():
+            #     self.optimizer_TS.zero_grad()
+            #     loss = sel.loss(self.temperature_scale(outputs), labels)
+            #     loss.backward()
+            #     return loss
+            # with torch.no_grad():
+            #     for input, label in self.dataloader_val:
+            #         input, label =
+            #         input = input.cuda()
+            #         logits = self.model(input)
+            #         logits_list.append(logits)
+            #         labels_list.append(label)
+            #     logits = torch.cat(logits_list).cuda()
+            #     labels = torch.cat(labels_list).cuda()
+            #     output = self.network(data)
+            #     l = self.loss(output, target)
+            # self.optimizer_TS.step(eval)
+            # self.on_train_end_TS()
+
+
         # elif self.IR:
         #     iso_reg = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
         #     scaler = MinMaxScaler()
