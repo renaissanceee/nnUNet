@@ -117,6 +117,12 @@ def jaccard_segment(x1, y1, x2, y2):
     union = max(y1, y2) - min(x1, x2)  # 并集长度
     return intersection / union if union > 0 else 0
 
+def get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x):
+    ce_left = y_bar / x_bar - max(y_bar - epsilon_y, 0) / (x_bar + epsilon_x)  # extreme-case: move to 0
+    ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x, 0) - y_bar / x_bar  # move to 1	
+    return ce_left, ce_right
+
+
 
 def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, tensor_seg_prob_map,
                      tensor_seg_gt_map, ce_type):
@@ -131,16 +137,27 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     if ce_type == 'kde':
         epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
                                             tensor_wt_gt_map)
+	print('1')	
+	ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
     elif ce_type == 'bins':
         epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
                                              tensor_wt_gt_map)
+	print('2')
+	ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
     elif ce_type == 'bs':
-        epsilon_y, epsilon_x = calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
+        print('3')
+	epsilon_y, epsilon_x = calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
+        # JJ: sqrt
+	ce_left, ce_right = get_ce_bound(y_bar, x_bar, torch.sqrt(epsilon_y), torch.sqrt(epsilon_x))
     elif ce_type == 'nll':
-        epsilon_y, epsilon_x = calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
+	print('4')	
+	epsilon_y, epsilon_x = calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
+	ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)    
     #####################
-    ce_left = y_bar / x_bar - max(y_bar - epsilon_y, 0) / (x_bar + epsilon_x)  # extreme-case: move to 0
-    ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x, 0) - y_bar / x_bar  # move to 1
+    # ce_left = y_bar / x_bar - max(y_bar - epsilon_y, 0) / (x_bar + epsilon_x)  # extreme-case: move to 0
+    # ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x, 0) - y_bar / x_bar  # move to 1
+    
+    
     # overall-range
     l_range = ce_left + sigma_r  # CE_left + σ
     r_range = ce_right + sigma_r  # CE_right + σ    # range__ce+1std = ce_left + ce_right + 2*sigma_r
