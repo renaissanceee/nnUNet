@@ -628,22 +628,23 @@ class nnUNetTrainer(object):
         set_train_folder_label = join(self.raw_dataset_folder_base, "labelsTr") # labels
         set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal", "fold_" + str(self.fold))
         set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
-
+        self.print_to_log_file("Copy 1 fold into Ts ...")
         # val_keys (used for test-set)
         copy_brats_from_Tr_to_TsVal(ts_keys, set_train_folder_img, set_train_folder_label,
                          set_test_folder_img, set_test_folder_label, modalities=4)
         ###########################
         if self.TS is not None or self.IR:
             " imagesVal/labelsVal "
+            self.print_to_log_file(
+                f"Now we change split into train/val/test {len(tr_keys), len(val_keys), len(ts_keys)}")
             # resplit tr_keys=tr_keys(80%)+val_keys(20%)
             tr_keys, val_keys = split_nested_keys(tr_keys, val_ratio=0.2, seed=12345)# 20% val, 80% train
-            self.print_to_log_file(f"Now we change split into train/val/test {len(tr_keys),len(val_keys),len(ts_keys)}")
-            # val_keys (used for val-set)
-            copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder_label,
+            copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder_label,# val_keys (used for val-set)
                                         set_val_folder_img, set_val_folder_label, modalities=4)
         else:
-            print("no holdout set for post-hoc !!!")
+            self.print_to_log_file("no holdout set for post-hoc !!!")
             val_keys = tr_keys
+        # asd
         ###########################
 
         # load the datasets for training and validation. Note that we always draw random samples so we really don't

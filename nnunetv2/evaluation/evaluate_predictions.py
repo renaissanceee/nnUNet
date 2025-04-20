@@ -104,12 +104,11 @@ def compute_metrics(reference_file: str, prediction_file: str, image_reader_writ
     results['prediction_file'] = prediction_file
     results['metrics'] = {}
 
-
-    for r in labels_or_regions:#  [(1,2,3), (2,3), (3,)]
+    for r in labels_or_regions:  # [(1,2,3), (2,3), (3,)]
         results['metrics'][r] = {}
         mask_ref = region_or_label_to_mask(seg_ref, r)
         mask_pred = region_or_label_to_mask(seg_pred, r)
-        tp, fp, fn, tn = compute_tp_fp_fn_tn(mask_ref, mask_pred, ignore_mask)# np_array(1,155,240,240), None
+        tp, fp, fn, tn = compute_tp_fp_fn_tn(mask_ref, mask_pred, ignore_mask)  # np_array(1,155,240,240), None
         if tp + fp + fn == 0:
             results['metrics'][r]['Dice'] = np.nan
             results['metrics'][r]['IoU'] = np.nan
@@ -144,14 +143,6 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
         assert all(present), "Not all files in folder_ref exist in folder_pred"
     files_ref = [join(folder_ref, i) for i in files_pred]
     files_pred = [join(folder_pred, i) for i in files_pred]
-    # with multiprocessing.get_context("spawn").Pool(num_processes) as pool:
-    #     # for i in list(zip(files_ref, files_pred, [image_reader_writer] * len(files_pred), [regions_or_labels] * len(files_pred), [ignore_label] * len(files_pred))):
-    #     #     compute_metrics(*i)
-    #     results = pool.starmap(
-    #         compute_metrics,
-    #         list(zip(files_ref, files_pred, [image_reader_writer] * len(files_pred), [regions_or_labels] * len(files_pred),
-    #                  [ignore_label] * len(files_pred)))
-    #     )
 
     results = []
     for ref, pred in zip(files_ref, files_pred):
@@ -180,10 +171,7 @@ def compute_metrics_on_folder(folder_ref: str, folder_pred: str, output_file: st
     recursive_fix_for_json_export(means)
     recursive_fix_for_json_export(foreground_mean)
     result = {'metric_per_case': results, 'mean': means, 'foreground_mean': foreground_mean}
-    folder_save=join(folder_pred, "seg_metrics")
-    os.makedirs(folder_save, exist_ok=True)
-    if output_file is not None:
-        save_summary_json(result, join(folder_save, output_file))
+    save_summary_json(result, output_file)
     return result
     # print('DONE')
 
@@ -199,10 +187,6 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
     # get reader writer class
     example_file = subfiles(folder_ref, suffix=file_ending, join=True)[0]
     rw = determine_reader_writer_from_dataset_json(dataset_json, example_file)()
-
-    # maybe auto set output file
-    if output_file is None:
-        output_file = join(folder_pred, 'summary.json')
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
     compute_metrics_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
@@ -235,18 +219,25 @@ def evaluate_folder_entry_point():
                         help='dataset.json file')
     parser.add_argument('-pfile', type=str, required=True,
                         help='plans.json file')
-    parser.add_argument('-o', type=str, required=False, default=None,
-                        help='Output file. Optional. Default: pred_folder/summary.json')
+    parser.add_argument('-o', type=str, required=False, default="seg_metrics.json",
+                        help='Output file. Optional. Default: pred_folder/seg_metrics/seg_metrics.json')
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
-    parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
-    parser.add_argument('--TS', action='store_true',
-                        help='temperature_scaling')
+    parser.add_argument('--chill', action='store_true',
+                        help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
     args = parser.parse_args()
+    ## pred_folder
     if args.TS:
         basename = os.path.basename(args.pred_folder)
-        args.pred_folder = args.pred_folder.replace(basename, basename+'_TS')
-    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np, chill=args.chill)
+        args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}')
+    ## save_json
+    json_root = join(args.pred_folder, "seg_metrics")
+    os.makedirs(json_root, exist_ok=True)
+    args.o = join(json_root, args.o)
+
+    compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
+                               chill=args.chill)
 
 
 def evaluate_simple_entry_point():
@@ -262,10 +253,12 @@ def evaluate_simple_entry_point():
                         help='Output file. Optional. Default: pred_folder/summary.json')
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
-    parser.add_argument('--chill', action='store_true', help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--chill', action='store_true',
+                        help='dont crash if folder_pred does not have all files that are present in folder_gt')
 
     args = parser.parse_args()
-    compute_metrics_on_folder_simple(args.gt_folder, args.pred_folder, args.l, args.o, args.np, args.il, chill=args.chill)
+    compute_metrics_on_folder_simple(args.gt_folder, args.pred_folder, args.l, args.o, args.np, args.il,
+                                     chill=args.chill)
 
 
 if __name__ == '__main__':
@@ -277,5 +270,6 @@ if __name__ == '__main__':
     regions = labels_to_list_of_regions([1, 2])
     ignore_label = None
     num_processes = 12
-    compute_metrics_on_folder(folder_ref, folder_pred, output_file, image_reader_writer, file_ending, regions, ignore_label,
+    compute_metrics_on_folder(folder_ref, folder_pred, output_file, image_reader_writer, file_ending, regions,
+                              ignore_label,
                               num_processes)

@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter,MaxNLocator
 import os
+from batchgenerators.utilities.file_and_folder_operations import subfiles, join
 
 def plot_histogram_bias(values, title, xlabel, save_path, color):
     # font_size, name_size = 18, 14
@@ -121,8 +122,6 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
         label=r'$r$'
     )
 
-
-
     # font_size, name_size = 18, 14
     font_size, name_size = 22, 20
     ax.set_xticks(x)
@@ -144,7 +143,7 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
     # 分别设置 x/y 轴刻度字体大小
     ax.tick_params(axis='x', labelsize=int(0.8*name_size))
     ax.tick_params(axis='y', labelsize=name_size)
-
+    # import pdb;pdb.set_trace()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -220,3 +219,62 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
     ax.tick_params(axis='y', labelsize=name_size)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+
+def plot_r_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"binaryCE_{sigma}sigma") # 1e4
+    else:
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"binaryCE_{sigma}sigma")
+    os.makedirs(folder_save, exist_ok=True)
+
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_est_second = paired_samples['r_second_corr']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    name_list = paired_samples['reference_file']
+    sigma_c = 1 if sigma == '' else sigma
+    bound_naive = paired_samples['r_naive'][f'bound__ce+{sigma_c}std']
+    bound_second = paired_samples['r_second_corr'][f'bound__ce+{sigma_c}std']
+    for start in range(0, len(r_est_naive), step_size):
+        end = start + step_size
+        save_path = join(folder_save, f"r_and_range_{end}.png")
+        plot_r_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],
+                         bound_second[start:end], save_path, sigma, name_list[start:end])
+
+
+def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"binaryCE_{sigma}sigma_sep") # 1e4
+    else:
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"binaryCE_{sigma}sigma_sep")
+    os.makedirs(folder_save, exist_ok=True)
+
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    name_list = paired_samples['reference_file']
+    sigma_c = 1 if sigma == '' else sigma
+    bound_naive = paired_samples['r_naive'][f'bound__ce+{sigma_c}std']
+    bound_ce_naive = paired_samples['r_naive']['bound__ce']
+    for start in range(0, len(r_est_naive), step_size):
+        end = start + step_size
+        save_path = join(folder_save, f"ce_and_range_{end}.png")
+        plot_ce_and_range(r_est_naive[start:end], r_gt[start:end], bound_ce_naive[start:end], bound_naive[start:end],
+                          save_path, sigma, name_list[start:end])
+
+def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', exp=1):
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4_{exp}") # 1e4
+    else:
+        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
+    os.makedirs(folder_save, exist_ok=True)
+
+    sigma_c = 1 if sigma=="" else sigma
+    range_ce = paired_samples['r_naive'][f'range__ce+{sigma_c}std']
+    bias = paired_samples['r_naive']['bias_r']
+    save_path_bias = join(folder_save, f"bias_hist_{sigma}sigma.png")
+    plot_histogram_bias(bias, title=f'Overall Ratio Bias (±{sigma}$\\sigma$)',   # Bias
+               xlabel='Ratio Bias', save_path=save_path_bias, color='skyblue')
+    save_path_range = join(folder_save, f"range_hist_{sigma}sigma.png")
+    plot_histogram_range(range_ce, title=f'Overall Confidence Interval (±{sigma}$\\sigma$)', # Interval
+                   xlabel=f'Interval Length', save_path=save_path_range, color='#ba68c8')# '#A1D6B5'
+

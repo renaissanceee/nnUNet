@@ -1,9 +1,10 @@
-
+# nnUNetv2_train->nnUNetv2_TS->nnUNetv2_predict
+# ->nnUNetv2_ratio_estimator, nnUNetv2_evaluate_folder
 
 # ------------- train -------------
-nnUNetv2_train 137 2d 0 -tr nnUNetTrainerCELoss --TS adam # t6 (doing)
-nnUNetv2_train 137 2d 0 -tr nnUNetTrainerDiceLoss --TS adam
-nnUNetv2_train 137 2d 0 --TS adam
+nnUNetv2_train 137 2d 0 -tr nnUNetTrainerCELoss --TS lbfgs
+nnUNetv2_train 137 2d 0 -tr nnUNetTrainerDiceLoss --TS lbfgs
+nnUNetv2_train 137 2d 0 --TS lbfgs
 
 ## only TS
 nnUNetv2_train 137 2d 0 -tr nnUNetTrainerCELoss --TS adam -pretrained_weights nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/checkpoint_final.pth

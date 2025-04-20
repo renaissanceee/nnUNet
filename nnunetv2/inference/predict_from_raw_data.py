@@ -298,19 +298,7 @@ class nnUNetPredictor(object):
                                                 output_filenames_truncated, self.plans_manager, self.dataset_json,
                                                 self.configuration_manager, num_processes, self.device.type == 'cuda',
                                                 self.verbose_preprocessing)
-        # preprocessor = self.configuration_manager.preprocessor_class(verbose=self.verbose_preprocessing)
-        # # hijack batchgenerators, yo
-        # # we use the multiprocessing of the batchgenerators dataloader to handle all the background worker stuff. This
-        # # way we don't have to reinvent the wheel here.
-        # num_processes = max(1, min(num_processes, len(input_list_of_lists)))
-        # ppa = PreprocessAdapter(input_list_of_lists, seg_from_prev_stage_files, preprocessor,
-        #                         output_filenames_truncated, self.plans_manager, self.dataset_json,
-        #                         self.configuration_manager, num_processes)
-        # if num_processes == 0:
-        #     mta = SingleThreadedAugmenter(ppa, None)
-        # else:
-        #     mta = MultiThreadedAugmenter(ppa, None, num_processes, 1, None, pin_memory=pin_memory)
-        # return mta
+
 
     def get_data_iterator_from_raw_npy_data(self,
                                             image_or_list_of_images: Union[np.ndarray, List[np.ndarray]],
