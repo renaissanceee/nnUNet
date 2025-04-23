@@ -25,5 +25,8 @@ def fast_ece(y_true, y_pred, n_bins=10, device='cuda'):
     return ece
 
 def brier_score(probabilities, labels):
-    return torch.mean((probabilities - labels) ** 2) # binary
-    # return (torch.sum((probabilities - labels) ** 2, 1)).mean()
+    return torch.mean((probabilities - labels) ** 2)
+
+def mean_lp_dist(probabilities, labels, p = 1):
+    error = probabilities - labels
+    return torch.norm(error, p=p) / error.numel()

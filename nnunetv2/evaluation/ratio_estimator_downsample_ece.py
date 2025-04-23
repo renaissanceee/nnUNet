@@ -1,7 +1,5 @@
 import multiprocessing
 import os
-from pathlib import Path
-import re
 from copy import deepcopy
 from multiprocessing import Pool
 from typing import Tuple, List, Union, Optional, Any
@@ -21,8 +19,11 @@ import torch
 from nnunetv2.evaluation.ece_utils import fast_ece, brier_score, mean_lp_dist
 from nnunetv2.evaluation.ece_kde import get_ece_kde
 from nnunetv2.evaluation.plot_utils import plot_r_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset
+from acvl_utils.cropping_and_padding.bounding_boxes import crop_to_bbox
 from sklearn.metrics import accuracy_score, log_loss
 import torch.nn.functional as F
+import random
+
 
 def gather_files(folder_pred, folder_ref, file_ending=".nii.gz", chill=False):
     files_pred = subfiles(folder_pred, suffix=file_ending, join=False)
@@ -39,6 +40,8 @@ def gather_files(folder_pred, folder_ref, file_ending=".nii.gz", chill=False):
 
     return files_pred, files_prob, files_ref
 
+def label_or_region_to_key(label_or_region: Union[int, Tuple[int]]):
+    return str(label_or_region)
 
 def region_or_label_to_mask(segmentation: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
     if np.isscalar(region_or_label):
@@ -96,9 +99,8 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     sigma_r = var_r ** 0.5
 
     #####################
-    if 'kde' in ce_type:
-        p = int(re.search(r'\d+', ce_type).group())
-        epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, p)
+    if ce_type == 'kde':
+        epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map)
         ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
     elif ce_type == 'bins':
         epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map)
@@ -188,8 +190,8 @@ def get_ece_bins(f, y, device):
     # return torch.tensor(batch_ratio)
 
 
-def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, p):
-    print(f"Analyzing ece_kde with l-{p}...")
+def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
+    print(f"Analyzing ece_kde ...")
     # 1d_kde
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
@@ -197,9 +199,9 @@ def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, ten
     bandwidth = 0.02  # 0.001
     device = "cuda"
     sub = 1e4
-    epsilon_y = get_ece_kde_sub(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth, p,
+    epsilon_y = get_ece_kde_sub(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth, p=1,
                                 mc_type='canonical', device=device, sub=sub)  # binary: 0 vs 2
-    epsilon_x = get_ece_kde_sub(tensor_wt_prob_map.to(device), tensor_wt_gt_map.to(device), bandwidth, p,
+    epsilon_x = get_ece_kde_sub(tensor_wt_prob_map.to(device), tensor_wt_gt_map.to(device), bandwidth, p=1,
                                 mc_type='canonical', device=device, sub=sub)  # binary: 0 vs {1,2,3}
     return epsilon_y, epsilon_x
 
@@ -243,6 +245,72 @@ def clip_to_unit_range(x):
     return np.clip(x, 0, 1)  # range [0, 1]
 
 
+def downsample_3d_tensor(tensor, sampling_factor=2, random_seed=None):
+    """
+    对3D张量进行多维度降采样 (带随机种子控制)
+    Args:
+        tensor: 输入张量，形状为 [D, H, W] (此处为 [155, 240, 240])
+        sampling_factor: 降采样因子 (默认2)
+        random_seed: 随机种子 (None表示不固定)
+    Returns:
+        降采样后的张量，形状为 [D//f, H//f, W//f]
+    """
+    assert len(tensor.shape) == 3, "input must be [z,h,w]"
+    D, H, W = tensor.shape
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_seed)
+        random.seed(random_seed)
+
+    # z-slices: equal-interval
+    dim0_indices = torch.linspace(0, D - 1, D // sampling_factor, dtype=torch.long)
+    # H,W: 2-step-sampling
+    dim1_indices = torch.randint(0, H, (H // sampling_factor,)).sort().values
+    dim2_indices = torch.randint(0, W, (W // sampling_factor,)).sort().values
+    sampled_tensor = tensor[dim0_indices[:, None, None],
+    dim1_indices[None, :, None],
+    dim2_indices[None, None, :]]
+
+    return sampled_tensor
+
+
+def check_cropped_outside_is_zero(tensor, bbox):
+    mask = torch.zeros_like(tensor, dtype=bool)  # 创建一个全为 False 的掩码
+    slices = tuple(slice(low, high) for low, high in bbox)  # 在 bbox内置为 True
+    mask[slices] = True
+    outside_region = tensor[~mask]  # 检查 bbox 外是否为 0
+    return torch.all(outside_region == 0)
+
+
+def find_nonzero_range(tensor: torch.Tensor, cropped_z: int = 100, cropped_size: int = 190) -> torch.Tensor:
+    """
+    Crop a [D, H, W] tensor around the first detected non-zero column and row in the [H, W] dimensions.
+
+    Args:
+        tensor (torch.Tensor): Input tensor with shape [D, H, W]->[D, cropped_size, cropped_size]
+    """
+    D, H, W = tensor.shape
+
+    # Find non-zero columns and rows
+    col_has_value = (tensor != 0).any(dim=0).any(dim=0)  # [W]
+    row_has_value = (tensor != 0).any(dim=0).any(dim=1)  # [H]
+    z_has_value = (tensor != 0).any(dim=1).any(dim=1)  # [D]
+
+    # Get first non-zero indices
+    first_nonzero_col = torch.where(col_has_value)[0][0].item()
+    first_nonzero_row = torch.where(row_has_value)[0][0].item()
+    first_nonzero_z = torch.where(z_has_value)[0][0].item()  # z_min
+
+    # Prevent out-of-bounds crop
+    first_nonzero_z = D - cropped_z if first_nonzero_z + cropped_z > D else first_nonzero_z
+    first_nonzero_col = W - cropped_size if first_nonzero_col + cropped_size > W else first_nonzero_col
+    first_nonzero_row = H - cropped_size if first_nonzero_row + cropped_size > H else first_nonzero_row
+
+    if cropped_z == 155:
+        first_nonzero_z = 0
+    return first_nonzero_z, first_nonzero_col, first_nonzero_row  # W,H
+
 
 def detect_failure(paired_samples):  # fail_case: outside the range
     fail_case = []
@@ -275,7 +343,8 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                       labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
                       ignore_label: int = None,
                       binary: bool = False,
-                      biomarker: str ='ntr',
+                      cropped_size: int = None,
+                      cropped_z: int = None,
                       ce_type: str = "bins") -> dict:
     # load images
     seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
@@ -284,26 +353,18 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
 
     print(f"calculate r for {os.path.basename(reference_file)}")
-    interested_region = (2,) if biomarker=='ntr' else (2, 3)
 
     "analyze mean/var"
     # gt
     wt_gt_map, wt_gt_counter = region_or_label_to_mask(seg_ref, (1, 2, 3))
-    nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, interested_region) # JJ, ntr, ctr
+    nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, (2,))
 
+    # print(np.sum(slice_data== 2),np.sum(slice_data== 1)+np.sum(slice_data== 2)+np.sum(slice_data== 3))
     # pred
-    if binary:
-        print("Hey, now we binarize preds for seg (not prob)")
-        wt_prob_map, _ = region_or_label_to_mask(seg_pred, (1, 2, 3))
-        nec_prob_map, _ = region_or_label_to_mask(seg_pred, interested_region)
-        wt_prob_map = wt_prob_map.squeeze(0).astype(float)
-        nec_prob_map = nec_prob_map.squeeze(0).astype(float)
+    wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
+    nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2,))  # numerator
 
-    else:
-        wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
-        nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, interested_region)  # numerator
-
-    # prob+gt into tensor
+    # prob+gt
     tensor_nec_prob_map = torch.from_numpy(nec_prob_map)  # [155,240,240]
     tensor_wt_prob_map = torch.from_numpy(wt_prob_map)
     tensor_nec_gt_map = torch.from_numpy(nec_gt_map).squeeze(0)
@@ -311,7 +372,29 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
 
     tensor_seg_prob_map = torch.from_numpy(prob_pred)
     tensor_seg_gt_map = torch.from_numpy(seg_ref)
+    # torch.clamp(f[idx, :], min=0, max=1)
+    # binary
+    if binary:
+        print("Hey, now we binarize preds for seg (not prob)")
+        tensor_seg_map = torch.from_numpy(seg_pred)  # seg: argmax for 1
+        tensor_nec_prob_map = (tensor_seg_map == 2).to(torch.float64)
+        tensor_wt_prob_map = torch.isin(tensor_seg_map, torch.tensor([1, 2, 3])).double()
 
+    # large N for r_gt
+    r_gt = nec_gt_counter / wt_gt_counter
+    ################################
+    ## downsample + scattor
+    seeds = [10,20,30,40,50]
+    sampling_factor = 2
+    for seed in seeds:
+        # downsample: no change distr
+        tensor_nec_prob_map = downsample_3d_tensor(tensor_nec_prob_map, sampling_factor, seed)# [155,240,240]->[77,120,120]
+        tensor_wt_prob_map = downsample_3d_tensor(tensor_wt_prob_map, sampling_factor, seed)
+        tensor_nec_gt_map = downsample_3d_tensor(tensor_nec_gt_map, sampling_factor, seed)
+        tensor_wt_gt_map = downsample_3d_tensor(tensor_wt_gt_map, sampling_factor, seed)
+        # Todo: save 5 scattor -> plot
+
+    ################################
     "reformulate r to see how interval(x,y) changes"
     ## V-Bias
     v_bias_y, v_bias_x = calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
@@ -327,8 +410,6 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
         tensor_seg_prob_map,
         tensor_seg_gt_map,
         ce_type)
-    # print(f'ce_l: {ce_left}, ce_r: {ce_right}') # 0.109, 0.162
-    # print(f'std: {sigma_r}') # 0.001
     # CE_range
     # a prior is: r>0, which is appicable for confidence range
     x0_ce, y0_ce = clip_to_unit_range(r_naive - ce_left), clip_to_unit_range(r_naive + ce_right)
@@ -353,7 +434,6 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                         'r_naive': {}, 'r_first_corr': {},'r_second_corr': {},
                         'iou_scores': {}}
     # gt
-    r_gt = nec_gt_counter / wt_gt_counter
     results['ratio']['r_gt']['r_gt'] = r_gt
     results['ratio']['r_gt']['sigma_r'] = sigma_r
     # V-Bias: y,x
@@ -381,7 +461,6 @@ def compute_estimator_avg(reference_file: str, prediction_file: str, probability
                           labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
                           ignore_label: int = None,
                           binary: bool = False,
-                          biomarker: str ='ntr',
                           ce_type: str = "kde",
                           epsilon_y=None, epsilon_x=None) -> dict:
     # load images
@@ -389,7 +468,6 @@ def compute_estimator_avg(reference_file: str, prediction_file: str, probability
     seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
     prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240) within [0,1]
     ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
-
 
     results = {}
     results['reference_file'] = reference_file
@@ -399,32 +477,32 @@ def compute_estimator_avg(reference_file: str, prediction_file: str, probability
                         'r_naive': {}, 'r_first_corr': {},'r_second_corr': {},
                         'iou_scores': {}}
     print(f"calculate r for {os.path.basename(reference_file)}")
-    interested_region = (2,) if biomarker=='ntr' else (2, 3)
 
     "analyze mean/var"
     # gt
     wt_gt_map, wt_gt_counter = region_or_label_to_mask(seg_ref, (1, 2, 3))
-    nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, interested_region) # JJ, ntr, ctr
-    ## binary
-    if binary:
-        print("Hey, now we binarize preds for seg (not prob)")
-        wt_prob_map, _ = region_or_label_to_mask(seg_pred, (1, 2, 3))
-        nec_prob_map, _ = region_or_label_to_mask(seg_pred, interested_region)
-        wt_prob_map = wt_prob_map.squeeze(0).astype(float)
-        nec_prob_map = nec_prob_map.squeeze(0).astype(float)
+    nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, (2,))
 
-    else:
-        wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
-        nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, interested_region)  # numerator
+    # print(np.sum(slice_data== 2),np.sum(slice_data== 1)+np.sum(slice_data== 2)+np.sum(slice_data== 3))
+    # pred
+    wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
+    nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (2,))  # numerator
 
-    # prob+gt into tensor
+    # prob+gt
     tensor_nec_prob_map = torch.from_numpy(nec_prob_map)  # [155,240,240]
     tensor_wt_prob_map = torch.from_numpy(wt_prob_map)
     tensor_nec_gt_map = torch.from_numpy(nec_gt_map).squeeze(0)
     tensor_wt_gt_map = torch.from_numpy(wt_gt_map).squeeze(0)
+
     tensor_seg_prob_map = torch.from_numpy(prob_pred)
     tensor_seg_gt_map = torch.from_numpy(seg_ref)
 
+    # binary
+    if binary:
+        print("Hey, now we binarize preds for seg (not prob)")
+        tensor_seg_map = torch.from_numpy(seg_pred)  # seg: argmax for 1
+        tensor_nec_prob_map = (tensor_seg_map == 2).to(torch.float64)
+        tensor_wt_prob_map = torch.isin(tensor_seg_map, torch.tensor([1, 2, 3])).double()
 
     "reformulate r to see how interval(x,y) changes"
     ## V-Bias
@@ -524,7 +602,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
                                 num_processes: int = default_num_processes,
                                 chill: bool = True,
                                 binary: bool = False,
-                                biomarker: str ='ntr',
+                                cropped_size: int = None,
+                                cropped_z: int = None,
                                 ce_type: str = "bins",  # "kde", nll, bs
                                 exp: int = None,  # diff exp for kde,
                                 ) -> dict:
@@ -540,7 +619,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         # i += 1
         # if i > 130 or i < 129: continue  # JJ: first two samples
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
-                                   binary, biomarker, ce_type)
+                                   binary, cropped_size, cropped_z, ce_type)
         results.append(result)
     ## Jaccard: overlap metrics
     paired_samples = {'r_gt':{},'r_naive':{}, 'r_first_corr':{}, 'r_second_corr':{},
@@ -604,22 +683,22 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
               'ratio_per_case': results,
               }
 
-    if binary:
-        folder_save = join(folder_pred, f"ratio_metrics_binary_{biomarker}")
-    else:
-        folder_save = join(folder_pred, f"ratio_metrics_prob_{biomarker}")
-        
-    # ratio.json
+    folder_save = join(folder_pred, "ratio_metrics_binary") if binary else join(folder_pred,
+                                                                                "ratio_metrics_prob")  # binary
+    folder_save = f"{folder_save}_crop{cropped_size}&{cropped_z}" if cropped_size is not None else folder_save  # crop
+
+    ## debug
+    folder_save = join(folder_save,'debug')
+
     os.makedirs(folder_save, exist_ok=True)
     save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
-    # plot.json
+
     result_plot = {'r_gt': paired_samples['r_gt'], 'r_naive': paired_samples['r_naive'],
                    'r_first_corr': paired_samples['r_first_corr'], 'r_second_corr': paired_samples['r_second_corr']}
     result_as_list = {
         key: {subkey: value.tolist() if isinstance(value, np.ndarray) else value for subkey, value in value.items()} for
         key, value in result_plot.items()}  # extract bound-related items
-    os.makedirs(join(folder_save,'plot'), exist_ok=True)
-    save_json(result_as_list, join(folder_save,'plot', f"plot_{ce_type}_{output_file}"), sort_keys=False)
+    save_json(result_as_list, join(folder_save, f"plot_{ce_type}_{output_file}"), sort_keys=False)
     ################################################
     sigmas = ['', 2, 3]
     step_size = 10
@@ -640,7 +719,6 @@ def compute_estimator_on_folder_avg(folder_ref: str, folder_pred: str, output_fi
                                     num_processes: int = default_num_processes,
                                     chill: bool = True,
                                     binary: bool = False,
-                                    biomarker: str ='ntr',
                                     ce_type: str = "kde",  # "kde", nll, bs
                                     exp: str = "avg",  # diff exp for kde,
                                     avg_epsilon_y: Any = None,
@@ -655,7 +733,7 @@ def compute_estimator_on_folder_avg(folder_ref: str, folder_pred: str, output_fi
     for ref, pred, prob, epsilon_y, epsilon_x in zip(files_ref, files_pred, files_prob, avg_epsilon_y, avg_epsilon_x):
         # for ref, pred, prob, epsilon_y, epsilon_x in zip(files_ref[:3], files_pred[:3], files_prob[:3], avg_epsilon_y[:3], avg_epsilon_x[:]):
         result = compute_estimator_avg(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
-                                       binary, biomarker, ce_type, epsilon_y, epsilon_x)
+                                       binary, ce_type, epsilon_y, epsilon_x)
         results.append(result)
     ## Jaccard: overlap metrics
     paired_samples = {'r_gt':{},'r_naive':{}, 'r_first_corr':{}, 'r_second_corr':{},
@@ -712,22 +790,20 @@ def compute_estimator_on_folder_avg(folder_ref: str, folder_pred: str, output_fi
               'ratio_per_case': results,
               }
 
-    if binary:
-        folder_save = join(folder_pred, f"ratio_metrics_binary_{biomarker}")
-    else:
-        folder_save = join(folder_pred, f"ratio_metrics_prob_{biomarker}")
-    # ratio.json
+    folder_save = join(folder_pred, "ratio_metrics_binary") if binary else join(folder_pred,
+                                                                                "ratio_metrics_prob")  # binary
+    ## debug
+    folder_save = join(folder_save,'debug')
+
     os.makedirs(folder_save, exist_ok=True)
     save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
-    
-    # plot.json
+
     result_plot = {'r_gt': paired_samples['r_gt'], 'r_naive': paired_samples['r_naive'],
                    'r_first_corr': paired_samples['r_first_corr'], 'r_second_corr': paired_samples['r_second_corr']}
     result_as_list = {
         key: {subkey: value.tolist() if isinstance(value, np.ndarray) else value for subkey, value in value.items()} for
         key, value in result_plot.items()}  # extract bound-related items
-    os.makedirs(join(folder_save,'plot'), exist_ok=True)
-    save_json(result_as_list, join(folder_save,'plot', f"plot_{ce_type}_{output_file}"), sort_keys=False)
+    save_json(result_as_list, join(folder_save, f"plot_{ce_type}_{output_file}"), sort_keys=False)
     ################################################
     sigmas = ['', 2, 3]
     step_size = 10
@@ -745,7 +821,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                num_processes: int = default_num_processes,
                                chill: bool = False,
                                binary: bool = False,
-                               biomarker: str ='ntr',
+                               cropped_size: int = 0,
                                ce_type: str = "bins"  # "kde", nll, bs
                                ):
     dataset_json = load_json(dataset_json_file)
@@ -759,11 +835,12 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
     # maybe auto set output file
     if output_file is None:
         output_file = 'ratio.json'
+    cropped_z = 140 if cropped_size is not None else None  # fixed num_slices when cropping
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
     repeat_for_kde = 5
 
-    if 'kde' in ce_type:
+    if ce_type == 'kde':
         ## repeate 5 times
         list_epsilon_y, list_epsilon_x = [], []
         for exp in range(repeat_for_kde):
@@ -773,8 +850,9 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
             epsilon_dict = compute_estimator_on_folder(folder_ref, folder_pred, output_file_exp, rw, file_ending,
                                                        lm.foreground_regions if lm.has_regions else lm.foreground_labels,
                                                        lm.ignore_label,
-                                                       num_processes, chill=chill, binary=binary,biomarker=biomarker,
-                                                       ce_type=ce_type,exp=exp)
+                                                       num_processes, chill=chill, binary=binary,
+                                                       cropped_size=cropped_size, cropped_z=cropped_z, ce_type='kde',
+                                                       exp=exp)
             list_epsilon_y.append(epsilon_dict['epsilon_y'])
             list_epsilon_x.append(epsilon_dict['epsilon_x'])
         ## avg
@@ -786,15 +864,30 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                         lm.foreground_regions if lm.has_regions else lm.foreground_labels,
                                         lm.ignore_label,
                                         num_processes, chill=chill, binary=binary,
-                                        ce_type=ce_type, exp=exp,
+                                        ce_type='kde', exp='avg',
                                         avg_epsilon_y=avg_epsilon_y, avg_epsilon_x=avg_epsilon_x)
 
     else:
         compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
                                     lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
-                                    num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type, exp=None)
+                                    num_processes, chill=chill, binary=binary, cropped_size=cropped_size,
+                                    cropped_z=cropped_z, ce_type=ce_type, exp=None)
 
 
+def compute_metrics_on_folder_simple(folder_ref: str, folder_pred: str, labels: Union[Tuple[int, ...], List[int]],
+                                     output_file: str = None,
+                                     num_processes: int = default_num_processes,
+                                     ignore_label: int = None,
+                                     chill: bool = False):
+    example_file = subfiles(folder_ref, join=True)[0]
+    file_ending = os.path.splitext(example_file)[-1]
+    rw = determine_reader_writer_from_file_ending(file_ending, example_file, allow_nonmatching_filename=True,
+                                                  verbose=False)()
+    # maybe auto set output file
+    if output_file is None:
+        output_file = join(folder_pred, 'ratio.json')
+    compute_metrics_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
+                              labels, ignore_label=ignore_label, num_processes=num_processes, chill=chill)
 
 
 def evaluate_folder_entry_point():
@@ -802,9 +895,9 @@ def evaluate_folder_entry_point():
     parser = argparse.ArgumentParser()
     parser.add_argument('gt_folder', type=str, help='folder with gt segmentations')
     parser.add_argument('pred_folder', type=str, help='folder with predicted segmentations')
-    parser.add_argument('-djfile', type=str, required=False,
+    parser.add_argument('-djfile', type=str, required=True,
                         help='dataset.json file')
-    parser.add_argument('-pfile', type=str, required=False,
+    parser.add_argument('-pfile', type=str, required=True,
                         help='plans.json file')
     parser.add_argument('-o', type=str, required=False, default=None,
                         help='Output file. Optional. Default: pred_folder/summary.json')
@@ -814,21 +907,42 @@ def evaluate_folder_entry_point():
                         help='dont crash if folder_pred does not have all files that are present in folder_gt')
     parser.add_argument('--binary', action='store_true', help='use seg instead of prob for ratio est')
     parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
+    parser.add_argument('--crop', type=int, required=False, default=None, help='crop for smaller N')
     parser.add_argument('--ce_type', required=True, type=str, help='bins, kde, nll, bs')
-    parser.add_argument('--biomarker', required=True, type=str, help='ntr, ctr')
     args = parser.parse_args()
-    if args.pfile is None:
-        args.pfile = Path(args.pred_folder.rstrip("/")).parents[1] / "plans.json"
-    if args.djfile is None:
-        args.djfile = Path(args.pred_folder.rstrip("/")).parents[1] / "dataset.json"
     if args.TS is not None:
         basename = os.path.basename(args.pred_folder)
         args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}')
         print(f'calculating from ... {args.pred_folder}')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
-                               chill=args.chill, binary=args.binary, biomarker=args.biomarker,ce_type=args.ce_type)
+                               chill=args.chill, binary=args.binary, cropped_size=args.crop, ce_type=args.ce_type)
 
 
+def evaluate_simple_entry_point():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('gt_folder', type=str, help='folder with gt segmentations')
+    parser.add_argument('pred_folder', type=str, help='folder with predicted segmentations')
+    parser.add_argument('-l', type=int, nargs='+', required=True,
+                        help='list of labels')
+    parser.add_argument('-il', type=int, required=False, default=None,
+                        help='ignore label')
+    parser.add_argument('-o', type=str, required=False, default=None,
+                        help='Output file. Optional. Default: pred_folder/summary.json')
+    parser.add_argument('-np', type=int, required=False, default=default_num_processes,
+                        help=f'number of processes used. Optional. Default: {default_num_processes}')
+    parser.add_argument('--chill', action='store_true',
+                        help='dont crash if folder_pred does not have all files that are present in folder_gt')
+    parser.add_argument('--binary', action='store_true', help='use seg instead of prob for ratio est')
+    parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
+    parser.add_argument('--crop', type=int, required=False, default=None, help='crop for smaller N')
+    args = parser.parse_args()
+    if args.TS is not None:
+        basename = os.path.basename(args.pred_folder)
+        args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}')
+        print(f'calculating from ... {args.pred_folder}')
+    compute_metrics_on_folder_simple(args.gt_folder, args.pred_folder, args.l, args.o, args.np, args.il,
+                                     chill=args.chill, binary=args.binary, cropped_size=args.crop)
 
 
 if __name__ == '__main__':

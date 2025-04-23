@@ -2,6 +2,8 @@ import inspect
 import itertools
 import multiprocessing
 import os
+from pathlib import Path
+import re
 from copy import deepcopy
 from time import sleep
 from typing import Tuple, Union, List, Optional
@@ -48,8 +50,7 @@ class nnUNetPredictor(object):
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
                  allow_tqdm: bool = True,
-                 temperature: Optional[float] = 1.5,
-                 IR: bool = False):
+                 TS: str = 'lbfgs_50'):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -69,11 +70,10 @@ class nnUNetPredictor(object):
         self.perform_everything_on_device = perform_everything_on_device
         self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
         self.lr_scheduler_TS = None
-        # if self.TS=='lbfgs':
-        self.max_iter = 50 # 100
+        self.max_iter = int(re.search(r'\d+', TS).group()) # search for number instr: 50/100
         self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=self.max_iter)
+        print(f'for TS, max_iter={self.max_iter}')
 
-        self.IR = IR
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -179,8 +179,7 @@ class nnUNetPredictor(object):
                                        part_id: int = 0,
                                        num_parts: int = 1,
                                        save_probabilities: bool = False,
-                                       TS: str = None,
-                                       IR: bool = False):
+                                       TS: str = None):
 
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
@@ -227,8 +226,7 @@ class nnUNetPredictor(object):
                            folder_with_segs_from_prev_stage: str = None,
                            num_parts: int = 1,
                            part_id: int = 0,
-                           TS: str =None,
-                           IR: bool = False):
+                           TS: str =None):
         """
         This is nnU-Net's default function for making predictions. It works best for batch predictions
         (predicting many images at once).
@@ -278,7 +276,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,
-                                                save_probabilities, TS, IR)
+                                                save_probabilities, TS)
         if len(list_of_lists_or_source_folder) == 0:
             return
         data_iterator = self._internal_get_data_iterator_from_lists_of_filenames(list_of_lists_or_source_folder,
@@ -286,7 +284,7 @@ class nnUNetPredictor(object):
                                                                                  output_filename_truncated,
                                                                                  num_processes_preprocessing)
         # print(output_folder) # nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test
-        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export, TS, IR, labels_folder, output_folder)
+        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export, TS, labels_folder, output_folder)
 
     def _internal_get_data_iterator_from_lists_of_filenames(self,
                                                             input_list_of_lists: List[List[str]],
@@ -360,7 +358,6 @@ class nnUNetPredictor(object):
                                    save_probabilities: bool = False,
                                    num_processes_segmentation_export: int = default_num_processes,
                                    TS: str = 'lbfgs',
-                                   IR: bool  = False,
                                    labels_folder: str = None,
                                    output_folder: str = None,
                                    ):
@@ -396,65 +393,20 @@ class nnUNetPredictor(object):
                 labels_val_list.append(label_val_crop.reshape(-1))
                 # if i>2:break
 
-            if TS:
-                logits_val, labels_val = torch.cat(logits_val_list, dim=0).to('cuda'), torch.cat(labels_val_list,dim=0).long().to('cuda')
-                nll_criterion = nn.CrossEntropyLoss()# .cuda()
-                def eval():
-                    self.optimizer_TS.zero_grad()
-                    loss = nll_criterion(logits_val/self.temperature, labels_val)
-                    loss.backward()
-                    return loss
-                self.optimizer_TS.step(eval)
-                temperature = self.temperature.detach().cpu().item()
-                print(f'temperature: {temperature}')
-                result_as_list = {}
-                result_as_list['temperature'] = [temperature]
-                root = os.path.dirname(ofile)
-                save_json(result_as_list, join(os.path.dirname(root), f"temperature_{TS}_{self.max_iter}.json")) # two times, remove test/ and filename
-            elif IR:
-                import pdb;pdb.set_trace()
-                # # load test_set
-                # i = 0
-                # for preprocessed in data_iterator:
-                #     i += 1
-                #     data = preprocessed['data']
-                #     if isinstance(data, str):
-                #         delfile = data
-                #         data = torch.from_numpy(np.load(data))
-                #         os.remove(delfile)
-                #     ofile = preprocessed['ofile']
-                #     file_name = os.path.basename(ofile)
-                #     bbox = preprocessed['data_properties']['bbox_used_for_cropping']
-                #     print(f'\nPredicting {file_name}:')
-                #     # bbox
-                #     # pred_test
-                #     img_tmp = nib.load(join(output_folder, file_name + self.dataset_json['file_ending']))
-                #     pred_prob_test = torch.from_numpy(img_tmp.get_fdata()).permute(2, 0, 1).to('cuda')
-                #     pred_prob_test_crop = pred_prob_test[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1],
-                #                           bbox[2][0]:bbox[2][1]]
-                #     prob_test_list.append(pred_prob_test_crop.reshape(-1, 4))
-                #     if i > 2: break
-                # prob_val, labels_val = F.softmax(torch.cat(logits_val_list, dim=0), dim=-1).to('cpu'), torch.cat(labels_val_list, dim=0).long().to('cpu')
-                # pred_prob_test_crop = torch.cat(prob_test_list, dim=0).to('cpu')
-                # print("Isotonic Regression fit ...")
-                # # Fit isotonic regression on the val_set
-                # iso_reg = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
-                # scaler = MinMaxScaler()
-                # scaled_prob_val = scaler.fit_transform(prob_val)
-                # # test on test_set
-                # print("Isotonic Regression transform ...")
-                # ## load
-                # # prob_test = load
-                # calibrated_scores_test = np.zeros_like(prob_test)
-                # for class_idx in range(prob_test.shape[1]): # 4-class
-                #     mask = (labels_val == class_idx)
-                #     iso_reg.fit(scaled_prob_val[:, class_idx], mask)
-                #     calibrated_prob_test[:, class_idx] = iso_reg.transform(prob_test[:, class_idx])
-                # EPS = 1e-7
-                # calibrated_prob_test = scaler.inverse_transform(calibrated_prob_test)
-                # calibrated_prob_test = torch.clamp(torch.tensor(calibrated_prob_test), min=EPS, max=1 - EPS)
-
-
+            logits_val, labels_val = torch.cat(logits_val_list, dim=0).to('cuda'), torch.cat(labels_val_list,dim=0).long().to('cuda')
+            nll_criterion = nn.CrossEntropyLoss()# .cuda()
+            def eval():
+                self.optimizer_TS.zero_grad()
+                loss = nll_criterion(logits_val/self.temperature, labels_val)
+                loss.backward()
+                return loss
+            self.optimizer_TS.step(eval)
+            temperature = self.temperature.detach().cpu().item()
+            print(f'temperature: {temperature}')
+            result_as_list = {}
+            result_as_list['temperature'] = [temperature]
+            root = os.path.dirname(ofile)
+            save_json(result_as_list, join(os.path.dirname(root), f"temperature_{TS}.json")) # two times, remove test/ and filename
 
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
@@ -741,7 +693,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, 0, 1,
-                                                save_probabilities, TS, IR)
+                                                save_probabilities, TS)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -851,8 +803,7 @@ def predict_entry_point():
                         help='suffix to indicate training settings')
     parser.add_argument('--TS', type=str, required=False, default=None,
                         help='Temperature Scaling')
-    parser.add_argument('--IR', action='store_true', required=False, default=False,
-                        help='Isotonic Regression')
+
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -886,10 +837,8 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
 
-    if args.TS:
-        print(f"Post-hoc for temperature ...")
-    elif args.IR:
-        print(f"Post-hoc for Isotonic Regression ...")
+    print(f"Post-hoc for temperature ...")
+
 
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
@@ -899,8 +848,7 @@ def predict_entry_point():
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                temperature=None,
-                                IR = None)
+                                TS=args.TS)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,
@@ -912,7 +860,7 @@ def predict_entry_point():
                                  num_processes_segmentation_export=args.nps,
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
                                  num_parts=args.num_parts,
-                                 part_id=args.part_id,TS=args.TS, IR=args.IR)
+                                 part_id=args.part_id,TS=args.TS)
 
 
 if __name__ == '__main__':

@@ -3,7 +3,8 @@ import os
 from copy import deepcopy
 from multiprocessing import Pool
 from typing import Tuple, List, Union, Optional
-
+from pathlib import Path
+import re
 import numpy as np
 from batchgenerators.utilities.file_and_folder_operations import subfiles, join, save_json, load_json, \
     isfile
@@ -215,9 +216,9 @@ def evaluate_folder_entry_point():
     parser = argparse.ArgumentParser()
     parser.add_argument('gt_folder', type=str, help='folder with gt segmentations')
     parser.add_argument('pred_folder', type=str, help='folder with predicted segmentations')
-    parser.add_argument('-djfile', type=str, required=True,
+    parser.add_argument('-djfile', type=str, required=False,
                         help='dataset.json file')
-    parser.add_argument('-pfile', type=str, required=True,
+    parser.add_argument('-pfile', type=str, required=False,
                         help='plans.json file')
     parser.add_argument('-o', type=str, required=False, default="seg_metrics.json",
                         help='Output file. Optional. Default: pred_folder/seg_metrics/seg_metrics.json')
@@ -227,6 +228,10 @@ def evaluate_folder_entry_point():
                         help='dont crash if folder_pred does not have all files that are present in folder_gt')
     parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
     args = parser.parse_args()
+    if args.pfile is None:
+        args.pfile = Path(args.pred_folder.rstrip("/")).parents[1] / "plans.json"
+    if args.djfile is None:
+        args.djfile = Path(args.pred_folder.rstrip("/")).parents[1] / "dataset.json"
     ## pred_folder
     if args.TS:
         basename = os.path.basename(args.pred_folder)
