@@ -100,8 +100,9 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
         p = int(re.search(r'\d+', ce_type).group())
         epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, p)
         ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
-    elif ce_type == 'bins':
-        epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map)
+    elif 'bins' in ce_type:
+        bins = int(re.search(r'\d+', ce_type).group())
+        epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, bins)
         ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
     elif ce_type == 'bs':
         epsilon_y, epsilon_x, mean_l2_y, mean_l2_x = calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map)
@@ -180,10 +181,9 @@ def get_ece_kde_sub(f, y, bandwidth, p, mc_type, device, sub=1e4):
     return batch_ratio
 
 
-def get_ece_bins(f, y, device):
+def get_ece_bins(f, y, bins, device):
     f, y = f.squeeze(1).to(device), y.to(device)
-    batch_ratio = fast_ece(f, y, n_bins=10, device=device).to("cpu")
-    return batch_ratio
+    return fast_ece(f, y, n_bins=bins, device=device).to("cpu")
     # batch_ratio = fast_ece(f, y, n_bins=10, device=device).to("cpu").item()
     # return torch.tensor(batch_ratio)
 
@@ -229,13 +229,13 @@ def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_
     return epsilon_y, epsilon_x
 
 
-def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
+def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, bins):
     print(f"Analyzing ece_bins ...")
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
         -1).to(torch.int64)
-    epsilon_y = get_ece_bins(tensor_nec_prob_map, tensor_nec_gt_map, device="cuda")  # binary: 0 vs 2
-    epsilon_x = get_ece_bins(tensor_wt_prob_map, tensor_wt_gt_map, device="cuda")  # binary: 0 vs {1,2,3}
+    epsilon_y = get_ece_bins(tensor_nec_prob_map, tensor_nec_gt_map, bins=bins, device="cuda")  # binary: 0 vs 2
+    epsilon_x = get_ece_bins(tensor_wt_prob_map, tensor_wt_gt_map, bins=bins, device="cuda")   # binary: 0 vs {1,2,3}
     return epsilon_y, epsilon_x
 
 
@@ -538,7 +538,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     # i = 0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # i += 1
-        # if i > 130 or i < 129: continue  # JJ: first two samples
+        # if i > 130 or i < 120: continue  # JJ: first two samples
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
                                    binary, biomarker, ce_type)
         results.append(result)

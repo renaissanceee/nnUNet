@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter,MaxNLocator
 import os
 from batchgenerators.utilities.file_and_folder_operations import subfiles, join
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 
 def plot_histogram_bias(values, title, xlabel, save_path, color):
     # font_size, name_size = 18, 14
@@ -71,37 +73,30 @@ def plot_histogram_range(values, title, xlabel, save_path, color):
 
 def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png', sigma="",
                      name_list=[]):
+    ## Apr.23
+
+    # gt_color = 'red'
+    # naive_color = 'green'
+    # second_color = 'blue'
+    gt_color = 'blue' # JJ
+    naive_color = '#ba68c8'
+    second_color = '#81c784' # 'darkseagreen' # 'green'
+
     # xtick_labels
     case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in
                 name_list]  # "..."->"BraTS2021_00753.nii.gz"-> "00753"
     x = np.arange(len(r_gt))  # 根据 r_gt 的长度生成 x
-    fig, ax = plt.subplots(figsize=(7, 5))
-    dist = 0.1
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ## Apr.23
+    dist = 0.15 # 0.1
     # 绘制真实值（红色散点）
     ax.scatter(
         x,
         r_gt,
-        color='red',
+        color=gt_color,
         label=r'$r_{gt}$',
         zorder=4,
         s=80
-    )
-    r_est_array = np.full_like(x, r_est_second, dtype=float)  # extend dim
-    ax.errorbar(
-        x + dist,
-        r_est_array,  # extend
-        yerr=[r_est_array - bound_second[:, 0], bound_second[:, 1] - r_est_array],
-        fmt='o',
-        markersize=10,
-        markeredgewidth=2,
-        markerfacecolor='blue',
-        markeredgecolor='blue',
-        color='blue',
-        capsize=10,
-        capthick=15,
-        linewidth=5,
-        zorder=3,
-        label=r'$r_{corr,2}$'
     )
     # overall-bar: r_naive, r_second
     r_est_array = np.full_like(x, r_est_naive, dtype=float)  # extend dim
@@ -112,14 +107,31 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
         fmt='o',
         markersize=10,
         markeredgewidth=2,
-        markerfacecolor='green',
-        markeredgecolor='green',
-        color='green',
-        capsize=10,
+        markerfacecolor=naive_color,
+        markeredgecolor=naive_color,
+        color=naive_color,
+        capsize=8,
         capthick=15,
         linewidth=5,
         zorder=3,
         label=r'$r$'
+    )
+    r_est_array = np.full_like(x, r_est_second, dtype=float)  # extend dim
+    ax.errorbar(
+        x + dist,
+        r_est_array,  # extend
+        yerr=[r_est_array - bound_second[:, 0], bound_second[:, 1] - r_est_array],
+        fmt='o',
+        markersize=10,
+        markeredgewidth=2,
+        markerfacecolor=second_color,
+        markeredgecolor=second_color,
+        color=second_color,
+        capsize=8,
+        capthick=15,
+        linewidth=5,
+        zorder=3,
+        label=r'$r_{corr,2}$'
     )
 
     # font_size, name_size = 18, 14
@@ -149,34 +161,31 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
 
 
 def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma="", name_list=[]):
+    ## Apr.23
+    # gt_color = 'red'
+    # ce_color = 'limegreen'
+    # overall_color = 'green'
+    gt_color = 'blue'
+    ce_color = '#1565c0' # '#90caf9' # 'lightseagreen' # 'coral' # 'orange' # JJ
+    overall_color = '#ba68c8' # 'darkseagreen' # 'green'
+
     # xtick_labels
     case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in
                 name_list]  # "..."->"BraTS2021_00753.nii.gz"-> "00753"
     x = np.arange(len(r_gt))  # 根据 r_gt 的长度生成 x
-    fig, ax = plt.subplots(figsize=(7, 5))
-    dist = 0.1
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ## Apr.23
+    dist = 0.15 # 0.1
     # 扩展 r_est 为数组（所有点相同）
     r_est_array = np.full_like(x, r_est, dtype=float)
     # 绘制真实值（红色散点）
     ax.scatter(
         x,
         r_gt,
-        color='red',
+        color=gt_color,
         label=r'$r_{gt}$',
         zorder=4,
         s=80
-    )
-    # ce-区间块（用 bound_ce）
-    ax.vlines(
-        x + dist,
-        bound_ce[:, 0],
-        bound_ce[:, 1],
-        color='limegreen', # lightgreen, seagreen
-        linewidth=8,
-        alpha=0.5,
-        zorder=1,
-        label=r'Miscalib.'
-        # label=r'$I_{miscalib.}$'
     )
     # overall-bar（用 bound）
     ax.errorbar(
@@ -186,28 +195,61 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
         fmt='o',
         markersize=10,
         markeredgewidth=2,
-        markerfacecolor='green',
-        markeredgecolor='green',
-        color='green',
-        capsize=10,
+        markerfacecolor=overall_color,
+        markeredgecolor=overall_color,
+        color=overall_color,
+        capsize=8, # 10,
         capthick=15,
         linewidth=5,
         zorder=3,
         label=r'$r$'
     )
-
+    # ce-区间块（用 bound_ce）
+    ax.vlines(
+        x + dist,
+        bound_ce[:, 0],
+        bound_ce[:, 1],
+        color=ce_color,
+        linewidth=8,
+        alpha=0.5,
+        zorder=2,
+        label=r'$I_{CE}$'
+    )
 
     # font_size, name_size = 18, 14
     font_size, name_size = 22, 20
+
     ax.set_xticks(x)
     ax.set_xticklabels(case_ids, rotation=40, ha='center', fontsize=int(0.8*name_size))
     ax.set_facecolor('#e6e9f0')  
     ax.set_xlabel('Volume', fontsize=font_size)
     ax.set_ylabel('Ratio', fontsize=font_size)
-    ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=font_size)
+    # ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=font_size)
+    ########################################
+    ice_handle = Rectangle(
+        (0, 0),  # x, y 坐标（不影响图例）
+        width=0.3,  # 宽度：调大就更粗
+        height=1.1,  # 高度：看起来像竖线
+        color=ce_color,
+        alpha=0.5,
+    )
+    handles, labels = ax.get_legend_handles_labels()
+    # r_gt → r → I_{CE}
+    order = [labels.index(r'$r_{gt}$'), labels.index(r'$r$')]
+    ordered_handles = [handles[i] for i in order] + [ice_handle]
+    ordered_labels = [labels[i] for i in order] + [r'$I_{CE}$']
+    ax.legend(
+        ordered_handles,
+        ordered_labels,
+        loc='upper left',
+        bbox_to_anchor=(1.01, 1),
+        fontsize=font_size,
+        handleheight=1.1,  # 拉高 legend 中 handle 的高度
+        handlelength=0.3  # 缩短横向长度，避免看起来横着
+    )
+
     ax.grid(True, linestyle='--', alpha=0.5)
     ax.set_ylim(0, 1)
-    # ax.set_title(f'Ratio and Confidence Interval(±{sigma}$\\sigma$)', fontsize=font_size)
     ax.set_title(f'Miscalibration on 10 Volumes (±{sigma}$\\sigma$)', fontsize=font_size, pad=15)
     # 去掉边框框线
     ax.spines['top'].set_visible(False)
@@ -275,6 +317,9 @@ def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', exp=
     plot_histogram_bias(bias, title=f'Overall Ratio Bias (±{sigma}$\\sigma$)',   # Bias
                xlabel='Ratio Bias', save_path=save_path_bias, color='skyblue')
     save_path_range = join(folder_save, f"range_hist_{sigma}sigma.png")
+
+    ## Apr.23
+    range_color = '#ba68c8' # 'darkseagreen' # 'limegreen'
     plot_histogram_range(range_ce, title=f'Overall Confidence Interval (±{sigma}$\\sigma$)', # Interval
-                   xlabel=f'Interval Length', save_path=save_path_range, color='#ba68c8')# '#A1D6B5'
+                   xlabel=f'Interval Length', save_path=save_path_range, color=range_color)
 
