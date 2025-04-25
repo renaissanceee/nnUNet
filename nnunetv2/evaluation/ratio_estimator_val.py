@@ -87,7 +87,7 @@ def get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x):
 
 
 def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, tensor_seg_prob_map,
-                     tensor_seg_gt_map, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece):
+                     tensor_seg_gt_map, ce_type):
     # r and std
     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
                                                                                           tensor_wt_prob_map)
@@ -104,11 +104,11 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
         epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, bins)
     elif ce_type == 'bs':
         epsilon_y, epsilon_x = calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map)
+        return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), 0, 0, sigma_r.item(), epsilon_y.item(), epsilon_x.item()
     elif ce_type == 'nll':
         epsilon_y, epsilon_x = calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
     #####################
-    # ce_bound
-    ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_x_mean_ece, epsilon_x_mean_ece)
+    ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x)
 
     return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left.item(), ce_right.item(), sigma_r.item(), epsilon_y.item(), epsilon_x.item()
 
@@ -268,10 +268,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                       ignore_label: int = None,
                       binary: bool = False,
                       biomarker: str ='ntr',
-                      ce_type: str = "bins",
-                      epsilon_y_mean_ece: float = 0.0,
-                      epsilon_x_mean_ece: float = 0.0,
-                      ) -> dict:
+                      ce_type: str = "bins") -> dict:
     # load images
     seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
     seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
@@ -311,7 +308,8 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     ## V-Bias
     v_bias_y_L1, v_bias_x_L1 = calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
     # sigma
-    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,tensor_wt_prob_map)
+    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
+                                                                                          tensor_wt_prob_map)
     # calib-error（epsilon_y, epsilon_x）
     r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, sigma_r, epsilon_y, epsilon_x = analyze_r_ce_std(
         tensor_nec_prob_map,
@@ -320,9 +318,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
         tensor_wt_gt_map,
         tensor_seg_prob_map,
         tensor_seg_gt_map,
-        ce_type,
-        epsilon_y_mean_ece, # for bound
-        epsilon_x_mean_ece)
+        ce_type)
     # print(f'ce_l: {ce_left}, ce_r: {ce_right}') # 0.109, 0.162
     # print(f'std: {sigma_r}') # 0.001
     # CE_range
@@ -332,8 +328,8 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     x2_ce, y2_ce = clip_to_unit_range(r_2_ord_corr - ce_left), clip_to_unit_range(r_2_ord_corr + ce_right)
     # CE+sigma_range
     x0, y0 = clip_to_unit_range(x0_ce - sigma_r), clip_to_unit_range(y0_ce + sigma_r)  # naive_r, 1std
-    x1, y1 = clip_to_unit_range(x1_ce - sigma_r, ), clip_to_unit_range(y1_ce + sigma_r)  # 1_order_corr_r
-    x2, y2 = clip_to_unit_range(x2_ce - sigma_r, ), clip_to_unit_range(y2_ce + sigma_r)  # 2_order_corr_r
+    x1, y1 = clip_to_unit_range(x1_ce - sigma_r), clip_to_unit_range(y1_ce + sigma_r)  # 1_order_corr_r
+    x2, y2 = clip_to_unit_range(x2_ce - sigma_r), clip_to_unit_range(y2_ce + sigma_r)  # 2_order_corr_r
     x0_2sigma, y0_2sigma = clip_to_unit_range(x0 - sigma_r), clip_to_unit_range(y0 + sigma_r)
     x1_2sigma, y1_2sigma = clip_to_unit_range(x1 - sigma_r), clip_to_unit_range(y1 + sigma_r)
     x2_2sigma, y2_2sigma = clip_to_unit_range(x2 - sigma_r), clip_to_unit_range(y2 + sigma_r)
@@ -500,28 +496,14 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     """
     if output_file is not None:
         assert output_file.endswith('.json'), 'output_file should end with .json'
-    if binary:
-        folder_save = join(folder_pred, f"ratio_metrics_binary_{biomarker}")
-    else:
-        folder_save = join(folder_pred, f"ratio_metrics_prob_{biomarker}")
-
     files_pred, files_prob, files_ref = gather_files(folder_pred, folder_ref, ".nii.gz", chill)
     results = []
-
-    "epsilon from val-set"
-    epsilon_y, epsilon_x = 0, 0
-    path_ece_json = join(folder_save.replace('test', 'validation'), f"{ce_type}_{output_file}")
-    print(f'loading epsilon from {path_ece_json}') # bins15_ratio.json
-    mean_ece = load_json(path_ece_json) 
-    epsilon_y_mean_ece = mean_ece[f'mean_ece_{ce_type}']['epsilon_y']
-    epsilon_x_mean_ece = mean_ece[f'mean_ece_{ce_type}']['epsilon_x']
-
     # i = 0
-    for ref, pred, prob in zip(files_ref, files_pred, files_prob, ):
+    for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # i += 1
         # if i > 130 or i < 128: continue  # JJ: first two samples
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
-                                   binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece)
+                                   binary, biomarker, ce_type)
         results.append(result)
     ## Jaccard: overlap metrics
     paired_samples = {'r_gt':{},'r_naive':{}, 'r_first_corr':{}, 'r_second_corr':{},
@@ -584,6 +566,11 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
               'mean_r_jaccard__ce+123std': mean_r_jaccard,
               'ratio_per_case': results,
               }
+
+    if binary:
+        folder_save = join(folder_pred, f"ratio_metrics_binary_{biomarker}")
+    else:
+        folder_save = join(folder_pred, f"ratio_metrics_prob_{biomarker}")
         
     # ratio.json
     os.makedirs(folder_save, exist_ok=True)

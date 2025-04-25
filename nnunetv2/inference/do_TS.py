@@ -1,6 +1,6 @@
 import inspect
 import itertools
-import multiprocessing
+import multiprocessingb
 import os
 from pathlib import Path
 import re
@@ -38,7 +38,8 @@ from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 from nnunetv2.utilities.utils import create_lists_from_splitted_dataset_folder
-
+from nnunetv2.training.loss.dice import MemoryEfficientSoftDiceLoss
+from nnunetv2.utilities.helpers import softmax_helper_dim1
 
 class nnUNetPredictor(object):
     def __init__(self,
@@ -69,10 +70,13 @@ class nnUNetPredictor(object):
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
         self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
-        self.lr_scheduler_TS = None
-        self.max_iter = int(re.search(r'\d+', TS).group()) # search for number instr: 50/100
-        self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=self.max_iter)
-        print(f'for TS, max_iter={self.max_iter}')
+        self.max_iter = int(re.search(r'\d+', TS).group())
+        if 'lbfgs' in TS:
+            self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=self.max_iter) # 0.001
+            print(f'for TS, max_iter={self.max_iter}')
+        else:
+            self.optimizer_TS = None
+            print(f'for TS, we use a list to enumerate.')
 
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
@@ -391,16 +395,37 @@ class nnUNetPredictor(object):
                 # append
                 logits_val_list.append(pred_logits_val.reshape(-1, 4))
                 labels_val_list.append(label_val_crop.reshape(-1))
-                # if i>2:break
+                # if i>0:break
 
             logits_val, labels_val = torch.cat(logits_val_list, dim=0).to('cuda'), torch.cat(labels_val_list,dim=0).long().to('cuda')
-            nll_criterion = nn.CrossEntropyLoss()# .cuda()
-            def eval():
-                self.optimizer_TS.zero_grad()
-                loss = nll_criterion(logits_val/self.temperature, labels_val)
-                loss.backward()
-                return loss
-            self.optimizer_TS.step(eval)
+
+            if self.optimizer_TS is not None: ## lbfgs
+                if 'DC' in TS:
+                    loss_for_TS = MemoryEfficientSoftDiceLoss(**{'batch_dice': False,## SD ##
+                                                          'do_bg': False, 'smooth': 1e-5,
+                                                          'ddp': False},
+                                                       apply_nonlin=softmax_helper_dim1)
+                else:
+                    loss_for_TS = nn.CrossEntropyLoss()## CrE ##
+                def eval():
+                    self.optimizer_TS.zero_grad()
+                    loss = loss_for_TS(logits_val/self.temperature, labels_val)
+                    loss.backward()
+                    return loss
+                self.optimizer_TS.step(eval)
+
+            else: ## list
+                print(f'start to enumerate {self.max_iter} values ...')
+                loss_for_TS = nn.CrossEntropyLoss()
+                temp_values = torch.linspace(1e-2, 4, steps=self.max_iter) # list
+                optim_temp, best_loss = -1, torch.finfo(torch.float).max
+                for temp in tqdm(temp_values, desc="Searching for optimal temperature"):
+                    loss = loss_for_TS(logits_val/self.temperature, labels_val)
+                    if loss < best_loss:
+                        best_loss = loss
+                        optim_temp = temp
+                self.temperature = optim_temp.unsqueeze(0)
+
             temperature = self.temperature.detach().cpu().item()
             print(f'temperature: {temperature}')
             result_as_list = {}

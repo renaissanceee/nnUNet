@@ -14,7 +14,6 @@ def fast_ece(y_true, y_pred, n_bins=10, device='cuda'):
 
     # Only consider non-empty bins
     nonzero = bin_total != 0
-
     prob_true = (bin_true[nonzero] / bin_total[nonzero])  # accuracy
     prob_pred = (bin_sums[nonzero] / bin_total[nonzero])  # confidence
     weights = bin_total[nonzero] / torch.sum(bin_total[nonzero])
@@ -27,6 +26,9 @@ def fast_ece(y_true, y_pred, n_bins=10, device='cuda'):
 def brier_score(probabilities, labels):
     return torch.mean((probabilities - labels) ** 2)
 
-def mean_lp_dist(probabilities, labels, p = 1):
-    error = probabilities - labels
-    return torch.norm(error, p=p) / error.numel()
+def lp_score(probabilities, labels, p = 1):
+    return torch.norm(probabilities - labels, p=p)/ error.numel()
+
+def l1_score(probabilities, labels):
+    # return torch.mean(torch.abs(probabilities - labels))
+    return torch.mean(probabilities - labels)
