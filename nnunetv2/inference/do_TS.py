@@ -1,6 +1,6 @@
 import inspect
 import itertools
-import multiprocessingb
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -243,8 +243,11 @@ class nnUNetPredictor(object):
         list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
-        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal',fold_n) # TS
-        labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal', fold_n)  # TS
+        # list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal',fold_n)
+        # labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal', fold_n)
+        ## Apr.26
+        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal_TS', fold_n)  # TS
+        labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal_TS', fold_n)  # TS
         # ---------------------------------
         if isinstance(output_folder_or_list_of_truncated_output_files, str):
             output_folder = output_folder_or_list_of_truncated_output_files
@@ -373,7 +376,7 @@ class nnUNetPredictor(object):
         with multiprocessing.get_context("spawn").Pool(num_processes_segmentation_export) as export_pool:
             logits_val_list, labels_val_list = [],[]
             prob_test_list = []
-            # i = 0
+            i = 0
             for preprocessed in data_iterator:
                 # i+=1
                 data = preprocessed['data']
@@ -401,11 +404,13 @@ class nnUNetPredictor(object):
 
             if self.optimizer_TS is not None: ## lbfgs
                 if 'DC' in TS:
+                    print(f'start lbfgs+DC_loss ...')
                     loss_for_TS = MemoryEfficientSoftDiceLoss(**{'batch_dice': False,## SD ##
                                                           'do_bg': False, 'smooth': 1e-5,
                                                           'ddp': False},
                                                        apply_nonlin=softmax_helper_dim1)
                 else:
+                    print(f'start lbfgs+XE_loss ...')
                     loss_for_TS = nn.CrossEntropyLoss()## CrE ##
                 def eval():
                     self.optimizer_TS.zero_grad()
@@ -417,10 +422,11 @@ class nnUNetPredictor(object):
             else: ## list
                 print(f'start to enumerate {self.max_iter} values ...')
                 loss_for_TS = nn.CrossEntropyLoss()
-                temp_values = torch.linspace(1e-2, 4, steps=self.max_iter) # list
+                # temp_values = torch.linspace(1e-2, 3, steps=self.max_iter) # list
+                temp_values = torch.linspace(1e-2, 10, steps=self.max_iter)  # 100 points
                 optim_temp, best_loss = -1, torch.finfo(torch.float).max
                 for temp in tqdm(temp_values, desc="Searching for optimal temperature"):
-                    loss = loss_for_TS(logits_val/self.temperature, labels_val)
+                    loss = loss_for_TS(logits_val/temp, labels_val)
                     if loss < best_loss:
                         best_loss = loss
                         optim_temp = temp
@@ -432,7 +438,6 @@ class nnUNetPredictor(object):
             result_as_list['temperature'] = [temperature]
             root = os.path.dirname(ofile)
             save_json(result_as_list, join(os.path.dirname(root), f"temperature_{TS}.json")) # two times, remove test/ and filename
-
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
             data_iterator._finish()

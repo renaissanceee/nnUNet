@@ -240,7 +240,7 @@ class nnUNetPredictor(object):
         if "test" in output_folder_or_list_of_truncated_output_files:
             list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
         elif "validation" in output_folder_or_list_of_truncated_output_files:
-            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal', fold_n)
+            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal_ece', fold_n)
         else:
             assert "Informal Path: should be validation or test"
         # ---------------------------------

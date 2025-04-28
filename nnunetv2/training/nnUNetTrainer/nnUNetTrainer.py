@@ -71,7 +71,7 @@ from nnunetv2.utilities.helpers import empty_cache, dummy_context
 from nnunetv2.utilities.label_handling.label_handling import convert_labelmap_to_one_hot, determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from nnunetv2.evaluation.ece_kde import get_ece_kde
-from nnunetv2.training.nnUNetTrainer.nested_cross_val_utils import copy_brats_from_Tr_to_TsVal,split_nested_keys
+from nnunetv2.training.nnUNetTrainer.nested_cross_val_utils import copy_brats_from_Tr_to_Ts_or_Val,split_nested_keys
 
 
 class nnUNetTrainer(object):
@@ -148,7 +148,6 @@ class nnUNetTrainer(object):
         self.num_val_iterations_per_epoch = 50
         # self.num_epochs = 50 #100 #1000
         self.num_epochs = 100
-        self.num_TS_epochs = 10 # 3
         
         self.current_epoch = 0
         self.enable_deep_supervision = True
@@ -161,16 +160,6 @@ class nnUNetTrainer(object):
         self.num_input_channels = None  # -> self.initialize()
         self.network = None  # -> self.build_network_architecture()
         self.optimizer = self.lr_scheduler = None  # -> self.initialize
-        self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
-        self.lr_scheduler_TS = None
-        if self.TS=='lbfgs':
-            self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=50)
-        elif self.TS=='adam':
-            self.optimizer_TS = optim.Adam([self.temperature], lr=0.01)
-            self.lr_scheduler_TS = PolyLRScheduler(self.optimizer_TS, 0.01, self.num_TS_epochs)
-        elif self.TS=='sgd':
-            self.optimizer_TS = optim.SGD([self.temperature], lr=0.01, momentum=0.9)
-            self.lr_scheduler_TS = PolyLRScheduler(self.optimizer_TS, 0.01, self.num_TS_epochs)
         self.grad_scaler = GradScaler() if self.device.type == 'cuda' else None
         self.loss = None  # -> self.initialize
 
@@ -623,24 +612,29 @@ class nnUNetTrainer(object):
         " imagesTs/labelsTs "
         # Additional, construct ts_keys=val_keys, and save val(.nii.gz) --> Ts
         set_train_folder_img = join(self.raw_dataset_folder_base, "imagesTr") # images
-        set_val_folder_img = join(self.raw_dataset_folder_base, "imagesVal", "fold_" + str(self.fold))
+        # set_val_folder_img = join(self.raw_dataset_folder_base, "imagesVal", "fold_" + str(self.fold))
+        set_val_TS_folder_img = join(self.raw_dataset_folder_base, "imagesVal_TS", "fold_" + str(self.fold))
+        set_val_ece_folder_img = join(self.raw_dataset_folder_base, "imagesVal_ece", "fold_" + str(self.fold))
         set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_" + str(self.fold))
         set_train_folder_label = join(self.raw_dataset_folder_base, "labelsTr") # labels
-        set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal", "fold_" + str(self.fold))
+        # set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal", "fold_" + str(self.fold))
+        set_val_TS_folder_label = join(self.raw_dataset_folder_base, "labelsVal_TS", "fold_" + str(self.fold))
+        set_val_ece_folder_label = join(self.raw_dataset_folder_base, "labelsVal_ece", "fold_" + str(self.fold))
         set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
         self.print_to_log_file("Copy 1 fold into Ts ...")
         # val_keys (used for test-set)
-        copy_brats_from_Tr_to_TsVal(ts_keys, set_train_folder_img, set_train_folder_label,
+        copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
                          set_test_folder_img, set_test_folder_label, modalities=4)
         ###########################
-        if self.TS is not None or self.IR:
+        if self.TS or self.IR: # resplit tr_keys=tr_keys(80%)+val_TS_keys(10%)+val_ece_keys(10%)
             " imagesVal/labelsVal "
+            tr_keys, val_TS_keys, val_ece_keys = split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345)# 10%+10% val, 80% train
             self.print_to_log_file(
-                f"Now we change split into train/val/test {len(tr_keys), len(val_keys), len(ts_keys)}")
-            # resplit tr_keys=tr_keys(80%)+val_keys(20%)
-            tr_keys, val_keys = split_nested_keys(tr_keys, val_ratio=0.2, seed=12345)# 20% val, 80% train
-            copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder_label,# val_keys (used for val-set)
-                                        set_val_folder_img, set_val_folder_label, modalities=4)
+                f"Now we change split into train/val_TS/val_ece/test {len(tr_keys), len(val_TS_keys), len(val_ece_keys), len(ts_keys)}")
+            copy_brats_from_Tr_to_Ts_or_Val(val_TS_keys, set_train_folder_img, set_train_folder_label,
+                                        set_val_TS_folder_img, set_val_TS_folder_label, modalities=4) # copy Val_TS
+            copy_brats_from_Tr_to_Ts_or_Val(val_ece_keys, set_train_folder_img, set_train_folder_label,
+                                        set_val_ece_folder_img, set_val_ece_folder_label, modalities=4)# copy Val_ece
         else:
             self.print_to_log_file("no holdout set for post-hoc !!!")
             val_keys = tr_keys
@@ -995,29 +989,6 @@ class nnUNetTrainer(object):
         if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
             os.remove(join(self.output_folder, "checkpoint_latest.pth"))
 
-        if self.TS is None and not self.IR:
-            # shut down dataloaders
-            old_stdout = sys.stdout
-            with open(os.devnull, 'w') as f:
-                sys.stdout = f
-                if self.dataloader_train is not None and \
-                        isinstance(self.dataloader_train, (NonDetMultiThreadedAugmenter, MultiThreadedAugmenter)):
-                    self.dataloader_train._finish()
-                if self.dataloader_val is not None and \
-                        isinstance(self.dataloader_train, (NonDetMultiThreadedAugmenter, MultiThreadedAugmenter)):
-                    self.dataloader_val._finish()
-                sys.stdout = old_stdout
-            empty_cache(self.device)
-
-        self.print_to_log_file("Training done.")
-
-    def on_train_end_TS(self):
-        # temperature.json
-        result_as_list={}
-        result_as_list['temperature'] = [self.temperature.detach().cpu().item()]  # 'temperature': 1.37
-        # temperature.json, temperature_adam.json, temperature_sgd.json
-        save_json(result_as_list, join(self.output_folder, f"temperature_{self.TS}.json"))
-
         # shut down dataloaders
         old_stdout = sys.stdout
         with open(os.devnull, 'w') as f:
@@ -1029,8 +1000,10 @@ class nnUNetTrainer(object):
                     isinstance(self.dataloader_train, (NonDetMultiThreadedAugmenter, MultiThreadedAugmenter)):
                 self.dataloader_val._finish()
             sys.stdout = old_stdout
+
         empty_cache(self.device)
-        self.print_to_log_file("Post-hoc Temperature Scaling done.")
+        self.print_to_log_file("Training done.")
+
 
     def on_train_epoch_start(self):
         self.network.train()
@@ -1042,14 +1015,6 @@ class nnUNetTrainer(object):
         # lrs are the same for all workers so we don't need to gather them in case of DDP training
         self.logger.log('lrs', self.optimizer.param_groups[0]['lr'], self.current_epoch)
 
-    def on_train_epoch_start_TS(self):
-        self.network.train()
-        self.lr_scheduler_TS.step(self.current_epoch)
-        self.print_to_log_file('')
-        self.print_to_log_file(f'Epoch {self.current_epoch}')
-        self.print_to_log_file(
-            f"Current learning rate: {np.round(self.optimizer_TS.param_groups[0]['lr'], decimals=5)}")
-        self.logger.log('lrs', self.optimizer_TS.param_groups[0]['lr'], self.current_epoch)
 
     def train_step(self, batch: dict) -> dict:
         data = batch['data']
@@ -1082,164 +1047,6 @@ class nnUNetTrainer(object):
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
             self.optimizer.step()
         return {'loss': l.detach().cpu().numpy()}
-
-    # def train_step(self, batch: dict, epoch: int, start_epoch: int) -> dict:
-    #     data = batch['data']
-    #     target = batch['target']
-    #
-    #     data = data.to(self.device, non_blocking=True)
-    #     if isinstance(target, list):
-    #         target = [i.to(self.device, non_blocking=True) for i in target]
-    #     else:
-    #         target = target.to(self.device, non_blocking=True)
-    #
-    #     self.optimizer.zero_grad(set_to_none=True)
-    #     # Autocast can be annoying
-    #     # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
-    #     # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
-    #     # So autocast will only be active if we have a cuda device.
-    #     with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-    #         output = self.network(data)
-    #         l = self.loss(output, target)  # target only includes True/False
-    #         # print(f"seg_loss {l}")
-    #         # print(output)
-    #         # for region-based: len5, [105,3,192,160], [105,3,96,80], [105,3,48,40], [105,3,24,20], [105,3,12,10]-->[batch,out,H,W] of a patch
-    #         # for label-based: replace 3 with 4 ->label 0,1,2,3
-    #         # output is after softmax, should be propobablity[]
-    #         #####################
-    #         softmax_output = [torch.softmax(feat, dim=1) for feat in output]
-    #         if epoch>=start_epoch:
-    #             "Calib-bound(dirich): epsilon_x, epsilon_y ~r"
-    #             # 5 scales or only full-resl?
-    #             for scale in range(len(softmax_output)):  # necrosis: 2, wt: 1,2,3
-    #                 import pdb;pdb.set_trace()
-    #                 tensor_nec_prob_map = softmax_output[scale][:, 2, :, :].reshape(-1,1)
-    #                 tensor_wt_prob_map = (softmax_output[scale][:, 1, :, :] + softmax_output[scale][:, 2, :, :] + softmax_output[scale][:, 3, :,:]).reshape(-1,1)
-    #                 tensor_nec_gt_map = torch.where(target[scale] == 2, 1, 0).reshape(-1)  # {2} as 1, others as 0
-    #                 tensor_wt_gt_map = torch.clamp(target[scale], max=1).reshape(-1).to(torch.int64)  # {1,2,3} as 1
-    #                 "1) var_r"
-    #                 y_bar = torch.mean(tensor_nec_prob_map)
-    #                 var_y = torch.var(tensor_nec_prob_map)
-    #                 x_bar = torch.mean(tensor_wt_prob_map)
-    #                 var_x = torch.var(tensor_wt_prob_map)
-    #                 cov_x_y = torch.cov(torch.stack((tensor_wt_prob_map.squeeze(-1), tensor_nec_prob_map.squeeze(-1))))[0, 1]
-    #                 n = tensor_wt_prob_map.shape[0]
-    #                 var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
-    #                 sigma_r = torch.sqrt(var_r)
-    #                 "2) cali_r"
-    #                 ## choice-0: cano_y and cano_x
-    #                 # should construct binary_prob[N,2] for: 2_vs_others, 123_vs_others? -> dirichlet for [N,2]
-    #                 # preprocess: construct [N,2]
-    #                 # binary_prob_nec_others = torch.stack((1 - tensor_nec_prob_map, tensor_nec_prob_map),
-    #                 #                                      dim=1)  # prob_others, prob_nec
-    #                 # binary_prob_wt_others = torch.stack((1 - tensor_wt_prob_map, tensor_wt_prob_map), dim=1)
-    #                 # binary_prob_wt_others = torch.clamp(binary_prob_wt_others, min=0, max=1)  # avoid neg value
-    #                 ## choice-1: binary
-    #                 epsilon_y = get_ece_kde_batch(tensor_nec_prob_map, tensor_nec_gt_map, bandwidth=0.02, p=1,
-    #                                               mc_type='canonical', device=self.device)  # binary: {2} vs {0,1,3}  # inf????
-    #                 epsilon_x = get_ece_kde_batch(tensor_wt_prob_map, tensor_wt_gt_map, bandwidth=0.02, p=1,
-    #                                               mc_type='canonical', device=self.device)  # binary: {1,2,3} vs {0}
-    #                 ce_left = y_bar / x_bar - (y_bar - epsilon_y) / (x_bar + epsilon_x) # nan????
-    #                 ce_right = (y_bar + epsilon_y) / (x_bar - epsilon_x) - y_bar / x_bar
-    #                 ## choice-2: class_y, class_x
-    #                 # ...
-    #                 "3) range"
-    #                 l_range = ce_left + sigma_r  # CE_left + σ
-    #                 r_range = ce_right + sigma_r  # CE_right + σ
-    #                 if scale == 0:
-    #                     ce_var_range = l_range + r_range
-    #                 else:
-    #                     ce_var_range = ce_var_range + l_range + r_range
-    #                 import pdb;pdb.set_trace()
-    #                 print(f"scale {scale} range {ce_var_range}")
-    #                 # break # avoid killed
-    #                 # JJ: or just calc the full-resol
-    #             #####################
-    #             lambda_range = 0.1
-    #             l = l + lambda_range * ce_var_range
-    #
-    #     if self.grad_scaler is not None:
-    #         self.grad_scaler.scale(l).backward()
-    #         self.grad_scaler.unscale_(self.optimizer)
-    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
-    #         self.grad_scaler.step(self.optimizer)
-    #         self.grad_scaler.update()
-    #     else:
-    #         l.backward()
-    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
-    #         self.optimizer.step()
-    #     return {'loss': l.detach().cpu().numpy()}
-
-    def train_step_TS_ECE(self, batch: dict) -> dict:
-        data = batch['data']
-        target = batch['target']
-
-        data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
-        else:
-            target = target.to(self.device, non_blocking=True)
-
-        self.optimizer.zero_grad(set_to_none=True)
-        self.network.requires_grad_(False) # JJ: frozen backbone
-        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
-            weight_ce, bandwidth = 0.1, 0.02
-            def eval_TS():
-                self.optimizer_TS.zero_grad()
-                l = self.loss(self.temperature_scale(output), target) # for_CrE
-                print(f"seg_loss: {l}")
-                tensor_prob_map = F.softmax(self.temperature_scale(output)[0].reshape(-1,4), dim=1)
-                tensor_gt_map = target[0].reshape(-1).to(torch.int64)
-                epsilon_canonical = get_ece_kde_1e4_train(tensor_prob_map, tensor_gt_map, bandwidth,p=1,mc_type='canonical', device=self.device)
-                print(f"ECE_kde_canonical: {epsilon_canonical}")
-                l+= weight_ce * epsilon_canonical # for_KDE
-                l.backward()
-                return l
-            l=self.optimizer_TS.step(eval_TS)
-        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
-
-    def train_step_TS(self, batch: dict) -> dict:
-        data = batch['data']
-        target = batch['target']
-        data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
-        else:
-            target = target.to(self.device, non_blocking=True)
-        self.optimizer.zero_grad(set_to_none=True)
-        self.network.requires_grad_(False) # frozen backbone
-        import pdb;pdb.set_trace()
-        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
-            def eval_TS():
-                self.optimizer_TS.zero_grad()
-                l = self.loss(self.temperature_scale(output), target) # TS
-                l.backward()
-                return l
-            l = self.optimizer_TS.step(eval_TS)
-        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
-
-    def train_step_TS_lfbgs(self, batch: dict) -> dict:
-        data = batch['data']
-        target = batch['target']
-        data = data.to(self.device, non_blocking=True)
-        if isinstance(target, list):
-            target = [i.to(self.device, non_blocking=True) for i in target]
-        else:
-            target = target.to(self.device, non_blocking=True)
-        self.optimizer.zero_grad(set_to_none=True)
-        self.network.requires_grad_(False) # frozen backbone
-        import pdb;pdb.set_trace()
-        with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
-            def eval_TS():
-                self.optimizer_TS.zero_grad()
-                l = self.loss(self.temperature_scale(output), target) # TS
-                l.backward()
-                return l
-            l = self.optimizer_TS.step(eval_TS)
-        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
 
     def train_step(self, batch: dict) -> dict:
         data = batch['data']
@@ -1406,15 +1213,6 @@ class nnUNetTrainer(object):
             self.logger.plot_progress_png(self.output_folder)
         self.current_epoch += 1
 
-    def on_epoch_end_TS(self):
-        self.logger.log('epoch_end_timestamps', time(), self.current_epoch)
-        self.print_to_log_file('train_loss', np.round(self.logger.my_fantastic_logging['train_losses'][-1], decimals=4))
-        self.print_to_log_file(
-            f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], decimals=2)} s")
-        self.print_to_log_file('temperature', self.temperature.item())  # TS
-        if self.local_rank == 0:
-            self.logger.plot_progress_png(self.output_folder)
-        self.current_epoch += 1
 
     def save_checkpoint(self, filename: str) -> None:
         if self.local_rank == 0:
@@ -1626,103 +1424,27 @@ class nnUNetTrainer(object):
 
     def run_training(self):
         self.on_train_start()
-        if not self.load_checkpoint: # -> from scratch
-            self.print_to_log_file("train from scratch ...")
-            for epoch in range(self.current_epoch, self.num_epochs):
-                self.on_epoch_start()
-                self.on_train_epoch_start()
-                train_outputs = []
-                for batch_id in range(self.num_iterations_per_epoch):
-                    train_outputs.append(self.train_step(next(self.dataloader_train)))
-                self.on_train_epoch_end(train_outputs)
-                ########## val ###########
-                with torch.no_grad():
-                    self.on_validation_epoch_start()
-                    val_outputs = []
-                    for batch_id in range(self.num_val_iterations_per_epoch):
-                        val_outputs.append(self.validation_step(next(self.dataloader_val)))
-                    self.on_validation_epoch_end(val_outputs)
-                ##########################
-                self.on_epoch_end()
-            self.on_train_end()
-        else:
-            self.print_to_log_file("load a pretrained nnUNet ...")
 
-        if self.TS is not None:
-            if self.TS!='lbfgs':
-                self.print_to_log_file("train from post-hoc TS ...")
-                print(self.optimizer_TS.__class__.__name__) # Adam, SGD
-                for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
-                    self.on_epoch_start()
-                    self.on_train_epoch_start_TS()
-                    train_outputs = []
-                    for batch_id in range(self.num_iterations_per_epoch):
-                        train_outputs.append(self.train_step_TS(next(self.dataloader_val)))# TS
-                    self.on_train_epoch_end(train_outputs)
-                    self.on_epoch_end_TS()
-                self.on_train_end_TS()
-            elif self.TS=='lbfgs': # LBFGS
-                for epoch in range(self.current_epoch, self.current_epoch+self.num_TS_epochs):
-                    self.on_epoch_start()
-                    self.on_train_epoch_start_TS()
-                    train_outputs = []
-                    for batch_id in range(self.num_iterations_per_epoch):
-                        train_outputs.append(self.train_step_TS_lbfgs(next(self.dataloader_val)))# TS
-                    self.on_train_epoch_end(train_outputs)
-                    self.on_epoch_end_TS()
-    
-                self.on_train_end_TS()
-
-            # data = batch['data'].to(self.device, non_blocking=True)
-            # target = batch['target'].to(self.device, non_blocking=True)
-            # def eval():
-            #     self.optimizer_TS.zero_grad()
-            #     loss = sel.loss(self.temperature_scale(outputs), labels)
-            #     loss.backward()
-            #     return loss
-            # with torch.no_grad():
-            #     for input, label in self.dataloader_val:
-            #         input, label =
-            #         input = input.cuda()
-            #         logits = self.model(input)
-            #         logits_list.append(logits)
-            #         labels_list.append(label)
-            #     logits = torch.cat(logits_list).cuda()
-            #     labels = torch.cat(labels_list).cuda()
-            #     output = self.network(data)
-            #     l = self.loss(output, target)
-            # self.optimizer_TS.step(eval)
-            # self.on_train_end_TS()
+        self.print_to_log_file("train from scratch ...")
+        for epoch in range(self.current_epoch, self.num_epochs):
+            self.on_epoch_start()
+            self.on_train_epoch_start()
+            train_outputs = []
+            for batch_id in range(self.num_iterations_per_epoch):
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
+            self.on_train_epoch_end(train_outputs)
+            ########## val ###########
+            with torch.no_grad():
+                self.on_validation_epoch_start()
+                val_outputs = []
+                for batch_id in range(self.num_val_iterations_per_epoch):
+                    val_outputs.append(self.validation_step(next(self.dataloader_val)))
+                self.on_validation_epoch_end(val_outputs)
+            ##########################
+            self.on_epoch_end()
+        self.on_train_end()
 
 
-        # elif self.IR:
-        #     iso_reg = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
-        #     scaler = MinMaxScaler()
-        #     val_data = next(self.dataloader_val)
-        #     scores_val, labels_val = val_data['data'], val_data['target']
-        #     scores_test = 
-        #     ## probabilities ##
-        #     npz_path = os.path.join(preds_root, file_name + '.npz')
-        #     probs = np.load(npz_path)
-        #     probs = probs['probabilities']  # (3,155,240,240)
-        # 
-        #     ## preds ##
-        #     nii_path = os.path.join(preds_root, file_name + '.nii.gz')
-        #     preds = nib.load(nii_path).get_fdata()  # np, [240,240,155] belong to labels {0,1,2,3}, due  to overwritten
-        
-        
-        
-        
-        #     scaled_scores_val = scaler.fit_transform(scores_val)
-        #
-        #     calibrated_scores_test = torch.zeros_like(scores_test)
-        #     for class_idx in range(scores_test.shape[1]):
-        #         mask = (labels_val == class_idx)
-        #         iso_reg.fit(scaled_scores_val[:, class_idx], mask)
-        #         calibrated_scores_test[:, class_idx] = iso_reg.transform(scores_test[:, class_idx])
-        #
-        #     calibrated_scores_test = scaler.inverse_transform(calibrated_scores_test)
-        #     calibrated_scores_test = torch.clamp(torch.tensor(calibrated_scores_test), min=EPS, max=1 - EPS)
 
 
             

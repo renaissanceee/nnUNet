@@ -273,8 +273,8 @@ def run_training_entry():
                     help="Use this to set the device the training should run with. Available options are 'cuda' "
                          "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
                          "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_train [...] instead!")
-    parser.add_argument('--TS', type=str, required=False,default=None,
-                        help='Temperature Scaling from pretrained model.')
+    parser.add_argument('--TS', action='store_true', required=False,
+                        help='Temperature Scaling.')
     parser.add_argument('--IR', action='store_true', required=False,
                         help='Isotonic Regression.')
     args = parser.parse_args()

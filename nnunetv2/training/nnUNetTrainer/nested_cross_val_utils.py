@@ -10,7 +10,7 @@ import torch
 import random
 
 
-def copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder_label,
+def copy_brats_from_Tr_to_Ts_or_Val(val_keys, set_train_folder_img, set_train_folder_label,
                                 set_test_folder_img, set_test_folder_label, modalities=4):
     """
     Params:
@@ -34,11 +34,23 @@ def copy_brats_from_Tr_to_TsVal(val_keys, set_train_folder_img, set_train_folder
         dst_label = join(set_test_folder_label, f"{case_id}.nii.gz")
         shutil.copy(src_label, dst_label)
 
-def split_nested_keys(tr_keys, val_ratio=0.2, seed=12345):
+# def split_nested_keys(tr_keys, val_ratio=0.2, seed=12345):
+#     random.seed(seed)
+#     keys = tr_keys.copy()
+#     random.shuffle(keys)
+#     val_size = int(len(keys) * val_ratio)
+#     val_keys = keys[:val_size]
+#     new_tr_keys = keys[val_size:]
+#     return new_tr_keys, val_keys
+
+def split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345):
     random.seed(seed)
     keys = tr_keys.copy()
     random.shuffle(keys)
-    val_size = int(len(keys) * val_ratio)
+    val_size = int(len(keys) * (val_ratio_TS+val_ratio_ece)) # 0.1+0.1
+    val_TS_size = int(len(keys) * val_ratio_TS)# 0.1
     val_keys = keys[:val_size]
+    # val_keys=val_TS_keys+val_ece_keys
+    val_TS_keys, val_ece_keys = val_keys[:val_TS_size],val_keys[val_TS_size:]
     new_tr_keys = keys[val_size:]
-    return new_tr_keys, val_keys
+    return new_tr_keys, val_TS_keys, val_ece_keys
