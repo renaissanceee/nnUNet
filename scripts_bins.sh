@@ -1,0 +1,3 @@
+nnUNetv2_ratio_estimator  --biomarker ntr --ce_type bins15 /staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw_nested/Dataset137_BraTS2021/labelsVal_ece/fold_0/  /staging/leuven/stg_00081/jli/calibration/nnUNet_nested/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerDiceLoss__nnUNetPlans__2d/fold_0/validation_ece
+nnUNetv2_ratio_estimator  --biomarker ntr --ce_type bins15 /staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw_nested/Dataset137_BraTS2021/labelsTs/fold_0/  /staging/leuven/stg_00081/jli/calibration/nnUNet_nested/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test
+

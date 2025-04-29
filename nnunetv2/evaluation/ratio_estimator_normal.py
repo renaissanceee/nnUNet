@@ -18,7 +18,7 @@ from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
 # from nnunetv2.evaluation.ece_utils import calc_ece_kde,calc_bs,calc_v_bias,calc_nll,calc_ece_bins
-from nnunetv2.evaluation.ece_utils import get_ece_bins,fast_ece,l1_score,get_ece_kde_sub,brier_score
+from nnunetv2.evaluation.ece_utils import get_ece_bins,fast_ece,ece_loss, l1_score,get_ece_kde_sub,brier_score
 # from nnunetv2.evaluation.plot_utils import plot_r_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset
 from sklearn.metrics import accuracy_score, log_loss
 import torch.nn.functional as F
@@ -64,6 +64,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     tensor_seg_gt_map_onehot = F.one_hot(tensor_seg_gt_map.long(), num_classes=4)
 
     list_kde=[]
+
     for i in range(5):
         epsilon_kde = get_ece_kde_sub(tensor_seg_prob_map, tensor_seg_gt_map.to(torch.int64),bandwidth=0.02, p=1,mc_type='top_label', device='cuda', sub=1e4) # 'kde'
         list_kde.append(epsilon_kde.item())
@@ -71,17 +72,19 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     # 'bins'
     confidences, predictions = torch.max(tensor_seg_prob_map, dim=1);accuracies = predictions.eq(tensor_seg_gt_map)
     epsilon_bin = get_ece_bins(confidences[:,None], accuracies,  bins=15, device="cuda")
+    # 'bins_loss'
+    epsilon_bin_loss = ece_loss(tensor_seg_prob_map, tensor_seg_gt_map, bins=15)
     # 'bs': one-hot
     epsilon_bs = brier_score(tensor_seg_prob_map, tensor_seg_gt_map_onehot)
     ## 'nll'
     #epsilon_nll = calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
-
     #####################################
+
     results = {}
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {'ece_kde': epsilon_kde,'ece_bin': epsilon_bin.item(),'bs': epsilon_bs.item(), }
+    results['ratio'] = {'ece_kde': epsilon_kde,'ece_bin': epsilon_bin.item(),'ece_bin_loss': epsilon_bin_loss.item(),'bs': epsilon_bs.item(), }
     return results
 
 
@@ -121,8 +124,9 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     # results['ratio'] = {'ece_kde': epsilon_kde.item(), 'ece_bin': epsilon_bin.item(), 'bs': epsilon_bs.item(), }
     mean_kde= np.mean(np.array([item['ratio']['ece_kde']for item in results]))
     mean_bin = np.mean(np.array([item['ratio']['ece_bin'] for item in results]))
+    mean_bin_loss = np.mean(np.array([item['ratio']['ece_bin_loss'] for item in results]))
     mean_bs = np.mean(np.array([item['ratio']['bs'] for item in results]))
-    mean_epsilon = {'mean_ece_kde': mean_kde, 'mean_ece_bin': mean_bin, 'mean_bs': mean_bs}
+    mean_epsilon = {'mean_ece_kde': mean_kde, 'mean_ece_bin': mean_bin, 'mean_ece_bin_loss': mean_bin_loss, 'mean_bs': mean_bs}
 
     [recursive_fix_for_json_export(i) for i in results]
     recursive_fix_for_json_export(mean_epsilon)
@@ -158,7 +162,8 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
 
     # maybe auto set output file
     if output_file is None:
-        output_file = 'cali_error.json'
+        # output_file = 'cali_error.json'
+        output_file = 'bins.json'
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
 

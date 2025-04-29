@@ -38,6 +38,22 @@ def visualize_prob_middle_slice(file, suffix, save_path):
     plt.imsave(save_path + f"_{slice_idx}_nec.png", nec_uncertainty, cmap="jet")
     plt.imsave(save_path + f"_{slice_idx}_wt.png", wt_uncertainty, cmap="jet")
 
+def visualize_input_middle_slice(file, suffix, save_path):
+    # 加载 .nii.gz 文件
+    img = nib.load(file + suffix)
+    data = img.get_fdata()  # shape: (H, W, D) or (C, H, W, D)
+
+    slice_idx = data.shape[2] // 3
+    # 如果有通道维度，选择指定通道
+    if data.ndim == 4:
+        slice_data = data[0, :, :, slice_index]
+    elif data.ndim == 3:
+        slice_data = data[:, :, slice_index]
+    else:
+        raise ValueError(f"Unsupported data shape: {data.shape}")
+    plt.imsave(save_path + f"_{slice_idx}.png", slice_data, cmap='gray')
+
+
 # file_name = "BraTS2021_00000"
 # file_name = "BraTS2021_00009"
 # file_name = "BraTS2021_00016"
@@ -61,23 +77,29 @@ prob_pred_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_C
 prob_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_prob"
 os.makedirs(prob_save_root, exist_ok=True)
 visualize_prob_middle_slice(os.path.join(prob_pred_root,file_name), ".npz", os.path.join(prob_save_root,file_name))
+# input
+input_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/"
+inout_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_prob"
+os.makedirs(input_save_root, exist_ok=True)
+visualize_input_middle_slice(os.path.join(input_root,file_name), ".nii.gz", os.path.join(input_save_root,file_name))
 
 
-
-file_name = "BraTS2021_00031"
-
-## pred_seg ##
-seg_pred_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/validation/"
-seg_save_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/val_seg/"
-os.makedirs(seg_save_root, exist_ok=True)
-visualize_middle_slice(os.path.join(seg_pred_root,file_name), ".nii.gz", os.path.join(seg_save_root,file_name))
-## gt_seg ##
-gt_file_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/"
-gt_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_gt"
-os.makedirs(gt_save_root, exist_ok=True)
-visualize_middle_slice(os.path.join(gt_file_root,file_name), ".nii.gz", os.path.join(gt_save_root,file_name))
-## pred_prob ##
-prob_pred_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/"
-prob_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_prob"
-os.makedirs(prob_save_root, exist_ok=True)
-visualize_prob_middle_slice(os.path.join(prob_pred_root,file_name), ".npz", os.path.join(prob_save_root,file_name))
+#
+#
+# file_name = "BraTS2021_00031"
+#
+# ## pred_seg ##
+# seg_pred_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/validation/"
+# seg_save_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/val_seg/"
+# os.makedirs(seg_save_root, exist_ok=True)
+# visualize_middle_slice(os.path.join(seg_pred_root,file_name), ".nii.gz", os.path.join(seg_save_root,file_name))
+# ## gt_seg ##
+# gt_file_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/"
+# gt_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_gt"
+# os.makedirs(gt_save_root, exist_ok=True)
+# visualize_middle_slice(os.path.join(gt_file_root,file_name), ".nii.gz", os.path.join(gt_save_root,file_name))
+# ## pred_prob ##
+# prob_pred_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/"
+# prob_save_root = "./nnUNet_results_inference/Brats2021/Dataset137_BraTS2021/2d_CE/fold_0/val_prob"
+# os.makedirs(prob_save_root, exist_ok=True)
+# visualize_prob_middle_slice(os.path.join(prob_pred_root,file_name), ".npz", os.path.join(prob_save_root,file_name))

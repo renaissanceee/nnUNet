@@ -4,6 +4,8 @@
 # ------------- train -------------
 nnUNetv2_train 137 2d 0 -tr nnUNetTrainerCELoss --TS
 nnUNetv2_train 137 2d 0 -tr nnUNetTrainerDiceLoss --TS
+nnUNetv2_train 137 2d 0 -tr nnUNetTrainerTopk10Loss --TS
+nnUNetv2_train 137 2d 0 -tr nnUNetTrainerDiceTopK10Loss --TS
 nnUNetv2_train 137 2d 0 --TS
 ## --TS {lbfgs_50, list_1000}
 nnUNetv2_TS -i nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/ -o nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test -d 137 -c 2d -f 0 --TS lbfgs_50

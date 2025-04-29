@@ -19,10 +19,8 @@ def plot_histogram_bias(values, title, xlabel, save_path, color):
     ax.set_facecolor('#e6e9f0')  # 设置浅灰色背景
 
     # 去掉边框框线
-    ax.spines['top'].set_visible(False)   
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
 
     # 设置标签和标题
     plt.xlabel(xlabel, fontsize=font_size)
@@ -51,10 +49,8 @@ def plot_histogram_range(values, title, xlabel, save_path, color):
     ax.set_facecolor('#e6e9f0')  # 设置浅灰色背景
 
     # 去掉边框框线
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
 
     # 设置标签和标题
     plt.xlabel(xlabel, fontsize=font_size)
@@ -71,13 +67,8 @@ def plot_histogram_range(values, title, xlabel, save_path, color):
     plt.savefig(save_path)
     plt.close()
 
-def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png', sigma="",
+def plot_corr_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second, save_path='plot.png', sigma="",
                      name_list=[]):
-    ## Apr.23
-
-    # gt_color = 'red'
-    # naive_color = 'green'
-    # second_color = 'blue'
     gt_color = 'blue' # JJ
     naive_color = '#ba68c8'
     second_color = '#81c784' # 'darkseagreen' # 'green'
@@ -148,10 +139,8 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
     # ax.set_title(f'Ratio and Confidence Interval(±{sigma}$\\sigma$)', fontsize=font_size)
     ax.set_title(f'Debiased Effect on 10 Volumes (±{sigma}$\\sigma$)', fontsize=font_size, pad=15)
     # 去掉边框框线
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
     # 分别设置 x/y 轴刻度字体大小
     ax.tick_params(axis='x', labelsize=int(0.8*name_size))
     ax.tick_params(axis='y', labelsize=name_size)
@@ -161,10 +150,6 @@ def plot_r_and_range(r_est_naive, r_est_second, r_gt, bound_naive, bound_second,
 
 
 def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma="", name_list=[]):
-    ## Apr.23
-    # gt_color = 'red'
-    # ce_color = 'limegreen'
-    # overall_color = 'green'
     gt_color = 'blue'
     ce_color = '#1565c0' # '#90caf9' # 'lightseagreen' # 'coral' # 'orange' # JJ
     overall_color = '#ba68c8' # 'darkseagreen' # 'green'
@@ -252,10 +237,8 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
     ax.set_ylim(0, 1)
     ax.set_title(f'Miscalibration on 10 Volumes (±{sigma}$\\sigma$)', fontsize=font_size, pad=15)
     # 去掉边框框线
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
     # 分别控制 x 和 y 轴的刻度标签字体大小
     ax.tick_params(axis='x', labelsize=int(0.8*name_size))
     ax.tick_params(axis='y', labelsize=name_size)
@@ -263,11 +246,116 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
     plt.close()
 
 
-def plot_r_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
+def plot_ratio_and_range(r_est, r_gt, bound, save_path, sigma="", name_list=[]):
+    gt_color = 'blue'
+    overall_color = '#ba68c8' # 'darkseagreen' # 'green'
+
+    # xtick_labels
+    case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in
+                name_list]  # "..."->"BraTS2021_00753.nii.gz"-> "00753"
+    x = np.arange(len(r_gt))  # 根据 r_gt 的长度生成 x
+    fig, ax = plt.subplots(figsize=(9, 5))
+    dist = 0.15 # 0.1
+    r_est_array = np.full_like(x, r_est, dtype=float)
+    # 绘制真实值（红色散点）
+    ax.scatter(
+        x,
+        r_gt,
+        color=gt_color,
+        label=r'$r_{gt}$',
+        zorder=4,
+        s=80
+    )
+    # overall-bar（用 bound）
+    ax.errorbar(
+        x - dist,
+        r_est_array,
+        yerr=[r_est_array - bound[:, 0], bound[:, 1] - r_est_array],
+        fmt='o',
+        markersize=10,
+        markeredgewidth=2,
+        markerfacecolor=overall_color,
+        markeredgecolor=overall_color,
+        color=overall_color,
+        capsize=8, # 10,
+        capthick=15,
+        linewidth=5,
+        zorder=3,
+        label=r'$r$'
+    )
+
+    font_size, name_size = 22, 20
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(case_ids, rotation=40, ha='center', fontsize=int(0.8*name_size))
+    ax.set_facecolor('#e6e9f0')  
+    ax.set_xlabel('Volume', fontsize=font_size)
+    ax.set_ylabel('Ratio', fontsize=font_size)
+
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_ylim(0, 1)
+    ax.set_title(f'Miscalibration on 10 Volumes (±{sigma}$\\sigma$)', fontsize=font_size, pad=15)
+    # 去掉边框框线
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
+    # 分别控制 x 和 y 轴的刻度标签字体大小
+    ax.tick_params(axis='x', labelsize=int(0.8*name_size))
+    ax.tick_params(axis='y', labelsize=name_size)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type):
+    # assert r_gt.shape[0] == bound.shape[0], "Shape mismatch between r_gt and bound"
+    # assert bound.shape[1] == 2, "bound should have shape [N, 2]"
     if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"binaryCE_{sigma}sigma") # 1e4
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__ratio_all") # 1e4
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"binaryCE_{sigma}sigma")
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ratio_all")
+    os.makedirs(folder_save, exist_ok=True)
+    save_path = join(folder_save, f"ratio_and_range_all.png")
+
+    r_gt = paired_samples['r_gt']['r_gt']
+    # name_list = paired_samples['reference_file']
+    sigma_c = 1 if sigma == '' else sigma
+    bound_naive = paired_samples['r_naive'][f'bound__ce+{sigma_c}std']
+
+    gt_color, bound_color = 'blue', '#ba68c8'
+    font_size, name_size = 22, 20
+    
+    x = np.arange(len(r_gt))
+    lower_err,upper_err  = r_gt - bound[:, 0],bound[:, 1] - r_gt
+    yerr = np.vstack((lower_err, upper_err))  # shape [2, N]
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.errorbar(x, r_gt, yerr=yerr, fmt='o', color=gt_color,
+                ecolor=bound_color, alpha=0.9, capsize=3)
+    ax.set_facecolor('#e6e9f0')
+
+    # 标签和标题
+    ax.set_xlabel('Sample Index', fontsize=font_size)
+    ax.set_ylabel('Ratio Estimation', fontsize=font_size)
+    ax.set_title('Estimated Ratios with Confidence Intervals', fontsize=font_size)
+
+    ax.set_xticks(x)
+    # ax.set_xticklabels(name_list, rotation=45, ha='right', fontsize=int(0.8 * name_size))# 设置 x 轴标签为 name_list（如果提供）
+    ax.set_ylim(0, 1)
+
+    # 美化：去除边框
+    for spine in ['top', 'right', 'left', 'bottom']:
+        ax.spines[spine].set_visible(False)
+
+    # 坐标轴刻度大小
+    ax.tick_params(axis='x', labelsize=int(0.8 * name_size))
+    ax.tick_params(axis='y', labelsize=name_size)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_corr_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__corr") # 1e4
+    else:
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__corr")
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -280,15 +368,16 @@ def plot_r_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size
         save_path = join(folder_save, f"r_and_range_{end}.png")
-        plot_r_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],
+        plot_corr_and_range(r_est_naive[start:end], r_est_second[start:end], r_gt[start:end], bound_naive[start:end],
                          bound_second[start:end], save_path, sigma, name_list[start:end])
 
 
 def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
     if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"binaryCE_{sigma}sigma_sep") # 1e4
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__ce") # 1e4
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"binaryCE_{sigma}sigma_sep")
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ce")
+    folder_save = get_path(folder_save,ce_type,step_size,sigma)
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -302,6 +391,24 @@ def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=1
         save_path = join(folder_save, f"ce_and_range_{end}.png")
         plot_ce_and_range(r_est_naive[start:end], r_gt[start:end], bound_ce_naive[start:end], bound_naive[start:end],
                           save_path, sigma, name_list[start:end])
+
+
+def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins"):
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4", f"CE_{sigma}sigma__ratio") # 1e4
+    else:
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ratio")
+    os.makedirs(folder_save, exist_ok=True)
+
+    r_est_naive = paired_samples['r_naive']['r_est']
+    r_gt = paired_samples['r_gt']['r_gt']
+    name_list = paired_samples['reference_file']
+    sigma_c = 1 if sigma == '' else sigma
+
+    for start in range(0, len(r_est_naive), step_size):
+        end = start + step_size
+        save_path = join(folder_save, f"r_and_range_{end}.png")
+        plot_ratio_and_range(r_est_naive[start:end], r_gt[start:end], bound_naive[start:end], save_path, sigma, name_list[start:end])
 
 def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', exp=1):
     if ce_type=="kde":

@@ -1,10 +1,11 @@
 import torch
 from nnunetv2.evaluation.ece_kde import get_ece_kde
+import torch.nn.functional as F
 
-
-def fast_ece(y_true, y_pred, n_bins=10, device='cuda'):
+def fast_ece(y_true, y_pred, bins=10, device='cuda'):
+    y_true, y_pred = y_true.to(device), y_pred.to(device)
     # Create bins
-    bins = torch.linspace(0., 1. - 1. / n_bins, n_bins, device=device)
+    bins = torch.linspace(0., 1. - 1. / bins, bins, device=device)
 
     # Digitize - find which bin each prediction belongs to
     binids = (torch.bucketize(y_pred, bins, right=True) - 1).view(-1)  # Ensure binids is 1D
@@ -24,6 +25,26 @@ def fast_ece(y_true, y_pred, n_bins=10, device='cuda'):
     l1 = torch.abs(prob_true - prob_pred)
     ece = torch.sum(weights * l1)
     return ece
+
+
+def ece_loss(preds, labels, bins=15):
+    bin_boundaries = torch.linspace(0, 1, bins + 1, device=preds.device)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+    confidences, predictions = torch.max(preds, 1)
+    accuracies = predictions.eq(labels)
+
+    ece = torch.zeros(1, device=preds.device)
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = confidences.gt(bin_lower) * confidences.le(bin_upper)
+        prop_in_bin = in_bin.float().mean()
+        if prop_in_bin.item() > 0:
+            accuracy_in_bin = accuracies[in_bin].float().mean()
+            avg_confidence_in_bin = confidences[in_bin].mean()
+            ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+
+    return ece
+
 
 def brier_score(probabilities, labels):
     return torch.mean((probabilities - labels) ** 2)
@@ -48,7 +69,7 @@ def get_ece_kde_sub(f, y, bandwidth, p, mc_type, device, sub=1e4):
 
 def get_ece_bins(f, y, bins, device):
     f, y = f.squeeze(1).to(device), y.to(device)
-    return fast_ece(f, y, n_bins=bins, device=device).to("cpu")
+    return fast_ece(f, y, bins=bins, device=device).to("cpu")
 
 def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, p):
     print(f"Analyzing ece_kde with l-{p}...")
@@ -91,9 +112,12 @@ def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_
 
 def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, bins):
     print(f"Analyzing ece_bins ...")
-    tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
-    tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
-        -1).to(torch.int64)
-    epsilon_y = get_ece_bins(tensor_nec_prob_map, tensor_nec_gt_map, bins=bins, device="cuda")  # binary: 0 vs 2
-    epsilon_x = get_ece_bins(tensor_wt_prob_map, tensor_wt_gt_map, bins=bins, device="cuda")   # binary: 0 vs {1,2,3}
+    # tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1), tensor_wt_prob_map.reshape(-1)
+    # tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(-1).to(torch.int64)
+    # epsilon_y = fast_ece(tensor_nec_prob_map, tensor_nec_gt_map,bins=bins, device=device).to("cpu")  # binary: 0 vs 2
+    # epsilon_x = fast_ece(tensor_wt_prob_map, tensor_wt_gt_map,bins=bins, device=device).to("cpu")
+    tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1,1), tensor_wt_prob_map.reshape(-1,1)
+    tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1), tensor_wt_gt_map.reshape(-1)  #.to(torch.int64)
+    epsilon_y = ece_loss(tensor_nec_prob_map, tensor_nec_gt_map, bins=15)
+    epsilon_x = ece_loss(tensor_wt_prob_map, tensor_wt_gt_map, bins=15)
     return epsilon_y, epsilon_x

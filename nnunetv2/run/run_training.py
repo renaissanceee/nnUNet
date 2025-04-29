@@ -220,13 +220,13 @@ def run_training(dataset_name_or_id: Union[str, int],
 
         if not only_run_validation:
             nnunet_trainer.run_training()
-        # JJ: not validation
-        if TS:
-            print("JJ, Train+TS is done~~")
-        elif IR:
-            print("JJ, Train+IR is done~~")
-        else:
-            print("JJ, Train is done~~")
+        # # JJ: not validation
+        # if TS:
+        #     print("JJ, Train+TS is done~~")
+        # elif IR:
+        #     print("JJ, Train+IR is done~~")
+        # else:
+        #     print("JJ, Train is done~~")
         # if val_with_best:
         #     nnunet_trainer.load_checkpoint(join(nnunet_trainer.output_folder, 'checkpoint_best.pth'))
         # nnunet_trainer.perform_actual_validation(export_validation_probabilities)
