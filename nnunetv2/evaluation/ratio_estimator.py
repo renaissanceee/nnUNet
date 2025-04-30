@@ -37,7 +37,15 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     #####################
     if 'kde' in ce_type:
         p = int(re.search(r'\d+', ce_type).group())
-        epsilon_y, epsilon_x = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, p)
+        repeat_for_kde = 5## ece_kde: repeate 5 times
+        list_epsilon_y, list_epsilon_x = [], []
+        for i in range(repeat_for_kde):
+            # print(f'JJ: repeate on time {i}...')
+            epsilon_y_sub, epsilon_x_sub = calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, p)
+            list_epsilon_y.append(epsilon_y_sub)
+            list_epsilon_x.append(epsilon_x_sub)
+        # epsilon_y, epsilon_x = np.mean(list_epsilon_y, axis=0), np.mean(list_epsilon_x, axis=0)
+        epsilon_y, epsilon_x = torch.mean(torch.tensor(list_epsilon_y)), torch.mean(torch.tensor(list_epsilon_x))
     elif 'bins' in ce_type:
         bins = int(re.search(r'\d+', ce_type).group())
         epsilon_y, epsilon_x = calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,tensor_wt_gt_map, bins)
@@ -265,112 +273,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
 
     else:
         update_r_keys_zero(results)
-
-
     return results
-
-
-def compute_estimator_avg(reference_file: str, prediction_file: str, probability_file: str,
-                          image_reader_writer: BaseReaderWriter,
-                          labels_or_regions: Union[List[int], List[Union[int, Tuple[int, ...]]]],
-                          ignore_label: int = None,
-                          binary: bool = False,
-                          biomarker: str ='ntr',
-                          ce_type: str = "kde",
-                          epsilon_y_mean_ece=None, epsilon_x_mean_ece=None) -> dict:
-    # load images
-    seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
-    seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
-    prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240) within [0,1]
-    ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
-
-
-    results = {}
-    results['reference_file'] = reference_file
-    results['prediction_file'] = prediction_file
-    results['probability_file'] = probability_file
-    results['ratio'] = {'r_gt': {}, 'v_bias': {}, f'epsilon_ece_{ce_type}': {},
-                        'r_naive': {}, 'r_first_corr': {},'r_second_corr': {}}
-    print(f"calculate r for {os.path.basename(reference_file)}")
-    interested_region = (2,) if biomarker=='ntr' else (2, 3)
-
-    "analyze mean/var"
-    # gt
-    wt_gt_map, wt_gt_counter = region_or_label_to_mask(seg_ref, (1, 2, 3))
-    nec_gt_map, nec_gt_counter = region_or_label_to_mask(seg_ref, interested_region) # JJ, ntr, ctr
-    ## binary
-    if binary:
-        print("Hey, now we binarize preds for seg (not prob)")
-        wt_prob_map, _ = region_or_label_to_mask(seg_pred, (1, 2, 3))
-        nec_prob_map, _ = region_or_label_to_mask(seg_pred, interested_region)
-        wt_prob_map = wt_prob_map.squeeze(0).astype(float)
-        nec_prob_map = nec_prob_map.squeeze(0).astype(float)
-
-    else:
-        wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
-        nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, interested_region)  # numerator
-
-    # prob+gt into tensor
-    tensor_nec_prob_map = torch.from_numpy(nec_prob_map)  # [155,240,240]
-    tensor_wt_prob_map = torch.from_numpy(wt_prob_map)
-    tensor_nec_gt_map = torch.from_numpy(nec_gt_map).squeeze(0)
-    tensor_wt_gt_map = torch.from_numpy(wt_gt_map).squeeze(0)
-    tensor_seg_prob_map = torch.from_numpy(prob_pred)
-    tensor_seg_gt_map = torch.from_numpy(seg_ref)
-
-
-    "reformulate r to see how interval(x,y) changes"
-    ## V-Bias
-    v_bias_y_L1, v_bias_x_L1 = calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
-    # sigma
-    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
-                                                                                          tensor_wt_prob_map)
-    
-    
-    # calib-error（epsilon_y, epsilon_x）
-    r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, sigma_r = analyze_r_std(
-        tensor_nec_prob_map,
-        tensor_wt_prob_map,
-        tensor_nec_gt_map,
-        tensor_wt_gt_map,
-        tensor_seg_prob_map,
-        tensor_seg_gt_map,
-        epsilon_y_mean_ece, # for bound
-        epsilon_x_mean_ece)
-
-    #####################################
-    results = {}
-    results['reference_file'] = reference_file
-    results['prediction_file'] = prediction_file
-    results['probability_file'] = probability_file
-    results['ratio'] = {'r_gt': {}, 'v_bias': {}, f'epsilon_ece_{ce_type}': {},
-                        'r_naive': {}, 'r_first_corr': {},'r_second_corr': {}}
-    # gt
-    r_gt = nec_gt_counter / wt_gt_counter
-    results['ratio']['r_gt']['r_gt'] = r_gt
-    results['ratio']['r_gt']['sigma_r'] = sigma_r
-    # V-Bias: y,x
-    # v_bias
-    results['ratio']['v_bias']['v_bias_y_L1'] = v_bias_y_L1
-    results['ratio']['v_bias']['v_bias_x_L1'] = v_bias_x_L1
-    # results['ratio']['v_bias']['v_bias_y_L2'] = v_bias_y_L2
-    # results['ratio']['v_bias']['v_bias_x_L2'] = v_bias_x_L2
-    # CE: y,x
-    results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_y'] = epsilon_y
-    results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_x'] = epsilon_x
-
-    if epsilon_y_mean_ece is not None:
-        bounds_naive = generate_confidence_bounds(r_naive, ce_left, ce_right, sigma_r)
-        bounds_1corr = generate_confidence_bounds(r_1_ord_corr, ce_left, ce_right, sigma_r)
-        bounds_2corr = generate_confidence_bounds(r_2_ord_corr, ce_left, ce_right, sigma_r)
-
-        update_r_keys(results, 'r_naive', r_naive, r_gt, *sum(bounds_naive, ()))
-        update_r_keys(results, 'r_first_corr', r_1_ord_corr, r_gt, *sum(bounds_1corr, ()))
-        update_r_keys(results, 'r_second_corr', r_2_ord_corr, r_gt, *sum(bounds_2corr, ()))
-    else:
-        update_r_keys_zero(results)
-    return results
-
 
 
 def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: str,
@@ -526,38 +429,9 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
         output_file = 'ratio.json'
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
-    repeat_for_kde = 5
-
-    if 'kde' in ce_type:
-        ## repeate 5 times
-        list_epsilon_y, list_epsilon_x = [], []
-        for exp in range(repeat_for_kde):
-            print(f'JJ: repeate on time {exp}...')
-            output_file_exp = output_file.replace('.json', f"_1e4_{exp}.json")  # 1e4
-            ##  ['epsilon_ece_kde']['epsilon_y'] and 'x'  for 2 np.arrays
-            epsilon_dict = compute_estimator_on_folder(folder_ref, folder_pred, output_file_exp, rw, file_ending,
-                                                       lm.foreground_regions if lm.has_regions else lm.foreground_labels,
-                                                       lm.ignore_label,
-                                                       num_processes, chill=chill, binary=binary,biomarker=biomarker,
-                                                       ce_type=ce_type,exp=exp)
-            list_epsilon_y.append(epsilon_dict['epsilon_y'])
-            list_epsilon_x.append(epsilon_dict['epsilon_x'])
-        ## avg
-        avg_epsilon_y, avg_epsilon_x = np.mean(list_epsilon_y, axis=0), np.mean(list_epsilon_x, axis=0)
-        exp = 'avg'
-        print(f'JJ: Final {exp}...')
-        output_file_exp = output_file.replace('.json', f"_1e4_{exp}.json")  # exp=avg
-        compute_estimator_on_folder_avg(folder_ref, folder_pred, output_file_exp, rw, file_ending,
-                                        lm.foreground_regions if lm.has_regions else lm.foreground_labels,
-                                        lm.ignore_label,
-                                        num_processes, chill=chill, binary=binary,
-                                        ce_type=ce_type, exp=exp,
-                                        avg_epsilon_y=avg_epsilon_y, avg_epsilon_x=avg_epsilon_x)
-
-    else:
-        compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
-                                    lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
-                                    num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type, exp=None)
+    compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
+                                lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
+                                num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type, exp=None)
 
 
 
