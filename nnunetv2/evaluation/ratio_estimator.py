@@ -17,7 +17,7 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
-from nnunetv2.evaluation.ece_utils import calc_ece_kde,calc_bs,calc_v_bias,calc_nll,calc_ece_bins
+from nnunetv2.evaluation.ece_utils import calc_ece_kde,calc_bs,calc_v_bias,calc_nll,calc_ece_bins,detect_failure
 from nnunetv2.evaluation.plot_utils import plot_corr_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset,\
                                             plot_ratio_and_range_dataset, plot_ratio_and_range_all
 from sklearn.metrics import accuracy_score, log_loss
@@ -60,23 +60,6 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     else:
         ce_left, ce_right = 0, 0
     return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left, ce_right, sigma_r.item(), epsilon_y.item(), epsilon_x.item()
-
-
-def analyze_r_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, tensor_seg_prob_map,
-                  tensor_seg_gt_map, epsilon_y, epsilon_x):
-    # r and std
-    y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
-                                                                                          tensor_wt_prob_map)
-    r_naive, r_1_ord_corr, r_2_ord_corr = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y,
-                                                     n)
-    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
-    sigma_r = var_r ** 0.5
-
-    ce_left = y_bar / x_bar - max(y_bar - epsilon_y, 0) / (x_bar + epsilon_x)  # extreme-case: move to 0
-    ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x, 0) - y_bar / x_bar  # move to 1
-
-    return r_naive.item(), r_1_ord_corr.item(), r_2_ord_corr.item(), ce_left.item(), ce_right.item(), sigma_r.item()
-
 
 def calc_statistic(tensor_nec_prob_map, tensor_wt_prob_map):
     # mean/var
@@ -126,23 +109,6 @@ def generate_confidence_bounds(r, ce_left, ce_right, sigma_r):
     x_2std, y_2std = clip_to_unit_range(x_1std - sigma_r, y_1std + sigma_r)
     x_3std, y_3std = clip_to_unit_range(x_1std - 2 * sigma_r, y_1std + 2 * sigma_r)
     return (x_ce, y_ce), (x_1std, y_1std), (x_2std, y_2std), (x_3std, y_3std)
-
-def detect_failure(paired_samples):
-    """Detect failure cases: r_gt falls outside of CE + Nσ bounds."""
-    r_gt = paired_samples['r_gt']['r_gt']
-    case_ids = np.array([
-        os.path.basename(name).split('_')[-1].split('.')[0]
-        for name in paired_samples['reference_file']
-    ])
-
-    def out_of_bound(mask_key):
-        bounds = paired_samples['r_naive'][mask_key]
-        lower, upper = bounds[:, 0], bounds[:, 1]
-        return (r_gt < lower) | (r_gt > upper)
-
-    return case_ids[out_of_bound('bound__ce+1std')], \
-           case_ids[out_of_bound('bound__ce+2std')], \
-           case_ids[out_of_bound('bound__ce+3std')]
 
 
 def update_r_keys_zero(results):
