@@ -17,7 +17,7 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
-from nnunetv2.evaluation.ece_utils import calc_ece_kde,calc_bs,calc_v_bias,calc_nll,calc_ece_bins,detect_failure
+from nnunetv2.evaluation.ece_utils import calc_ece_kde,calc_bs,calc_v_bias,calc_nll,calc_ece_bins,detect_failure,ece_loss
 from nnunetv2.evaluation.plot_utils import plot_corr_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset,\
                                             plot_ratio_and_range_dataset, plot_ratio_and_range_all
 from sklearn.metrics import accuracy_score, log_loss
@@ -54,7 +54,8 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     elif ce_type == 'nll':
         epsilon_y, epsilon_x = calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
     #####################
-    if epsilon_y_mean_ece is not None and ce_type!='bs' and ce_type!='kde2': # kde/bins in test-set
+    # if epsilon_y_mean_ece is not None and ce_type!='bs' and ce_type!='kde2': # kde/bins in test-set
+    if epsilon_y_mean_ece is not None and ce_type != 'bs':
         ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y_mean_ece, epsilon_x_mean_ece)# ce_bound
         ce_left, ce_right = ce_left.item(), ce_right.item()
     else:
@@ -228,7 +229,8 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_y'] = epsilon_y
     results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_x'] = epsilon_x
 
-    if epsilon_y_mean_ece is not None and ce_type!='bs' and ce_type!='kde2':
+    # if epsilon_y_mean_ece is not None and ce_type!='bs' and ce_type!='kde2':
+    if epsilon_y_mean_ece is not None and ce_type != 'bs':
         bounds_naive = generate_confidence_bounds(r_naive, ce_left, ce_right, sigma_r)
         bounds_1corr = generate_confidence_bounds(r_1_ord_corr, ce_left, ce_right, sigma_r)
         bounds_2corr = generate_confidence_bounds(r_2_ord_corr, ce_left, ce_right, sigma_r)
@@ -264,7 +266,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     else:
         folder_save = join(folder_pred, f"ratio_metrics_prob_{biomarker}")
     os.makedirs(folder_save, exist_ok=True)
-    if 'test' in folder_pred and ce_type!='bs' and ce_type!='kde2':
+    # if 'test' in folder_pred and ce_type!='bs' and ce_type!='kde2':
+    if 'test' in folder_pred and ce_type != 'bs':
         path_ece_json = join(folder_save.replace('test', 'validation_ece'), f"{ce_type}_{output_file}")
         if 'binary' in path_ece_json:
             path_ece_json=path_ece_json.replace('binary','prob') # ECE_interval still from prob
@@ -279,7 +282,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     results = []
     ################################################
     i = 0
-    for ref, pred, prob in zip(files_ref, files_pred, files_prob, ):
+    for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         # i += 1
         # if i > 10 or i < 8: continue  # JJ: first two samples
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
@@ -400,8 +403,6 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                 num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type, exp=None)
 
 
-
-
 def evaluate_folder_entry_point():
     import argparse
     parser = argparse.ArgumentParser()
@@ -419,6 +420,7 @@ def evaluate_folder_entry_point():
                         help='dont crash if folder_pred does not have all files that are present in folder_gt')
     parser.add_argument('--binary', action='store_true', help='use seg instead of prob for ratio est')
     parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
+    parser.add_argument('--other_cal', type=str, required=False, default=None, help='IR, Direchlet')
     parser.add_argument('--ce_type', required=True, type=str, help='bins15, kde1, nll, bs')
     parser.add_argument('--biomarker', required=True, type=str, help='ntr, ctr')
     args = parser.parse_args()
@@ -426,10 +428,13 @@ def evaluate_folder_entry_point():
         args.pfile = Path(args.pred_folder.rstrip("/")).parents[1] / "plans.json"
     if args.djfile is None:
         args.djfile = Path(args.pred_folder.rstrip("/")).parents[1] / "dataset.json"
+
+    basename = os.path.basename(args.pred_folder)
     if args.TS is not None:
-        basename = os.path.basename(args.pred_folder)
-        args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}')
-        print(f'calculating from ... {args.pred_folder}')
+        args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}') # _TS_list_1000_new
+    elif args.other_cal is not None:
+        args.pred_folder = args.pred_folder.replace(basename, basename + f'_{args.other_cal}') # _IR
+    print(f'calculating from ... {args.pred_folder}')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
                                chill=args.chill, binary=args.binary, biomarker=args.biomarker,ce_type=args.ce_type)
 

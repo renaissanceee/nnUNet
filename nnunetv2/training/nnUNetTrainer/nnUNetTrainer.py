@@ -623,21 +623,24 @@ class nnUNetTrainer(object):
         set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
         self.print_to_log_file("Copy 1 fold into Ts ...")
         # val_keys (used for test-set)
-        copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
-                         set_test_folder_img, set_test_folder_label, modalities=4)
+        if not os.path.exists(set_test_folder_img):
+            copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
+                             set_test_folder_img, set_test_folder_label, modalities=4)
         ###########################
         if self.TS or self.IR: # resplit tr_keys=tr_keys(80%)+val_TS_keys(10%)+val_ece_keys(10%)
             " imagesVal/labelsVal "
             tr_keys, val_TS_keys, val_ece_keys = split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345)# 10%+10% val, 80% train
+            val_keys = val_TS_keys
             self.print_to_log_file(
                 f"Now we change split into train/val_TS/val_ece/test {len(tr_keys), len(val_TS_keys), len(val_ece_keys), len(ts_keys)}")
-            copy_brats_from_Tr_to_Ts_or_Val(val_TS_keys, set_train_folder_img, set_train_folder_label,
-                                        set_val_TS_folder_img, set_val_TS_folder_label, modalities=4) # copy Val_TS
-            copy_brats_from_Tr_to_Ts_or_Val(val_ece_keys, set_train_folder_img, set_train_folder_label,
-                                        set_val_ece_folder_img, set_val_ece_folder_label, modalities=4)# copy Val_ece
+            if not os.path.exists(set_val_TS_folder_img) and not os.path.exists(set_val_ece_folder_img):
+                copy_brats_from_Tr_to_Ts_or_Val(val_TS_keys, set_train_folder_img, set_train_folder_label,
+                                            set_val_TS_folder_img, set_val_TS_folder_label, modalities=4) # copy Val_TS
+                copy_brats_from_Tr_to_Ts_or_Val(val_ece_keys, set_train_folder_img, set_train_folder_label,
+                                            set_val_ece_folder_img, set_val_ece_folder_label, modalities=4)# copy Val_ece
         else:
             self.print_to_log_file("no holdout set for post-hoc !!!")
-            val_keys = tr_keys
+            val_keys = ts_keys
         # asd
         ###########################
 
@@ -931,11 +934,11 @@ class nnUNetTrainer(object):
 
         mod.decoder.deep_supervision = enabled
 
-    def temperature_scale(self, logits):
-        """
-        Perform temperature scaling on logits
-        """
-        return [ ms_logits/ self.temperature for ms_logits in logits]
+    # def temperature_scale(self, logits):
+    #     """
+    #     Perform temperature scaling on logits
+    #     """
+    #     return [ ms_logits/ self.temperature for ms_logits in logits]
 
     def on_train_start(self):
         # dataloaders must be instantiated here (instead of __init__) because they need access to the training data
@@ -1080,7 +1083,8 @@ class nnUNetTrainer(object):
             l.backward()
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
             self.optimizer.step()
-        return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
+        # return {'loss': l.detach().cpu().numpy(), 'temperature': self.temperature.detach().cpu().item()}
+        return {'loss': l.detach().cpu().numpy()}
 
     def on_train_epoch_end(self, train_outputs: List[dict]):
         outputs = collate_outputs(train_outputs)
@@ -1294,7 +1298,7 @@ class nnUNetTrainer(object):
 
         predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
                                     perform_everything_on_device=True, device=self.device, verbose=False,
-                                    verbose_preprocessing=False, allow_tqdm=False, temperature=self.temperature) # TS
+                                    verbose_preprocessing=False, allow_tqdm=False, temperature=None) # TS
         predictor.manual_initialization(self.network, self.plans_manager, self.configuration_manager, None,
                                         self.dataset_json, self.__class__.__name__,
                                         self.inference_allowed_mirroring_axes)

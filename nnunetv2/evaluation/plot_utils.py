@@ -308,9 +308,9 @@ def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type):
     # assert r_gt.shape[0] == bound.shape[0], "Shape mismatch between r_gt and bound"
     # assert bound.shape[1] == 2, "bound should have shape [N, 2]"
     if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__ratio_all") # 1e4
+        folder_save = join(folder_save, f"{ce_type}_plots_all_1e4_{exp}", f"CE_{sigma}sigma__ratio_all") # 1e4
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ratio_all")
+        folder_save = join(folder_save, f"{ce_type}_plots_all", f"CE_{sigma}sigma__ratio_all")
     os.makedirs(folder_save, exist_ok=True)
     save_path = join(folder_save, f"ratio_and_range_all.png")
 
@@ -321,9 +321,13 @@ def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type):
 
     gt_color, bound_color = 'blue', '#ba68c8'
     font_size, name_size = 22, 20
+    ## only 125 samples, otherwise too much/crowded.
+    r_gt, bound_naive = r_gt[:len(r_gt)//2], bound_naive[:len(r_gt)//2, :]
     
     x = np.arange(len(r_gt))
-    lower_err,upper_err  = r_gt - bound[:, 0],bound[:, 1] - r_gt
+    lower_err,upper_err  = r_gt - bound_naive[:, 0],bound_naive[:, 1] - r_gt
+    # lower_err, upper_err = np.minimum(r_gt, r_gt - bound_naive[:, 0]), np.minimum(1 - r_gt, bound_naive[:, 1] - r_gt)
+    lower_err, upper_err= np.clip(lower_err, 0, r_gt), np.clip(upper_err, 0, 1 - r_gt)
     yerr = np.vstack((lower_err, upper_err))  # shape [2, N]
 
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -377,7 +381,6 @@ def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=1
         folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__ce") # 1e4
     else:
         folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ce")
-    folder_save = get_path(folder_save,ce_type,step_size,sigma)
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -404,6 +407,7 @@ def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_siz
     r_gt = paired_samples['r_gt']['r_gt']
     name_list = paired_samples['reference_file']
     sigma_c = 1 if sigma == '' else sigma
+    bound_naive = paired_samples['r_naive'][f'bound__ce+{sigma_c}std']
 
     for start in range(0, len(r_est_naive), step_size):
         end = start + step_size

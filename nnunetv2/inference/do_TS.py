@@ -74,7 +74,7 @@ class nnUNetPredictor(object):
         if 'lbfgs' in TS:
             self.optimizer_TS = optim.LBFGS([self.temperature], lr=0.01, max_iter=self.max_iter) # 0.001
             print(f'for TS, max_iter={self.max_iter}')
-        else:
+        elif 'list' in TS:
             self.optimizer_TS = None
             print(f'for TS, we use a list to enumerate.')
 
@@ -182,8 +182,7 @@ class nnUNetPredictor(object):
                                        overwrite: bool = True,
                                        part_id: int = 0,
                                        num_parts: int = 1,
-                                       save_probabilities: bool = False,
-                                       TS: str = None):
+                                       save_probabilities: bool = False):
 
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
@@ -283,7 +282,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,
-                                                save_probabilities, TS)
+                                                save_probabilities)
         if len(list_of_lists_or_source_folder) == 0:
             return
         data_iterator = self._internal_get_data_iterator_from_lists_of_filenames(list_of_lists_or_source_folder,
@@ -423,7 +422,7 @@ class nnUNetPredictor(object):
                 print(f'start to enumerate {self.max_iter} values ...')
                 loss_for_TS = nn.CrossEntropyLoss()
                 # temp_values = torch.linspace(1e-2, 3, steps=self.max_iter) # list
-                temp_values = torch.linspace(1e-2, 10, steps=self.max_iter)  # 100 points
+                temp_values = torch.linspace(1e-2, 5, steps=self.max_iter)  # 100 points
                 optim_temp, best_loss = -1, torch.finfo(torch.float).max
                 for temp in tqdm(temp_values, desc="Searching for optimal temperature"):
                     loss = loss_for_TS(logits_val/temp, labels_val)
@@ -683,7 +682,7 @@ class nnUNetPredictor(object):
                            save_probabilities: bool = False,
                            overwrite: bool = True,
                            folder_with_segs_from_prev_stage: str = None,
-                                      TS: str =None, IR: bool=False):
+                           TS: str = None, other_cal: str = None):
         """
         Just like predict_from_files but doesn't use any multiprocessing. Slow, but sometimes necessary
         """
@@ -723,7 +722,7 @@ class nnUNetPredictor(object):
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
                                                 folder_with_segs_from_prev_stage, overwrite, 0, 1,
-                                                save_probabilities, TS)
+                                                save_probabilities)
         if len(list_of_lists_or_source_folder) == 0:
             return
 

@@ -2,12 +2,18 @@ import inspect
 import itertools
 import multiprocessing
 import os
+from pathlib import Path
+import re
 from copy import deepcopy
 from time import sleep
 from typing import Tuple, Union, List, Optional
 import json
 import numpy as np
+from sklearn.isotonic import IsotonicRegression
+from sklearn.preprocessing import MinMaxScaler
 import torch
+import nibabel as nib
+from torch import autocast, nn, optim
 from acvl_utils.cropping_and_padding.padding import pad_nd_image
 from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
 from batchgenerators.utilities.file_and_folder_operations import load_json, join, isfile, maybe_mkdir_p, isdir, subdirs, \
@@ -32,7 +38,9 @@ from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 from nnunetv2.utilities.utils import create_lists_from_splitted_dataset_folder
-
+from nnunetv2.training.loss.dice import MemoryEfficientSoftDiceLoss
+from nnunetv2.utilities.helpers import softmax_helper_dim1
+import joblib
 
 class nnUNetPredictor(object):
     def __init__(self,
@@ -44,8 +52,7 @@ class nnUNetPredictor(object):
                  verbose: bool = False,
                  verbose_preprocessing: bool = False,
                  allow_tqdm: bool = True,
-                 temperature: Optional[float] = None,
-                 other_cal: str = None):
+                 other_cal: str = 'IR'):
         self.verbose = verbose
         self.verbose_preprocessing = verbose_preprocessing
         self.allow_tqdm = allow_tqdm
@@ -63,8 +70,8 @@ class nnUNetPredictor(object):
             perform_everything_on_device = False
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
-        self.temperature=temperature
-        self.other_cal = other_cal
+
+
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -74,7 +81,6 @@ class nnUNetPredictor(object):
         """
         if use_folds is None:
             use_folds = nnUNetPredictor.auto_detect_available_folds(model_training_output_dir, checkpoint_name)
-
         dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
         plans = load_json(join(model_training_output_dir, 'plans.json'))
         plans_manager = PlansManager(plans)
@@ -170,9 +176,7 @@ class nnUNetPredictor(object):
                                        overwrite: bool = True,
                                        part_id: int = 0,
                                        num_parts: int = 1,
-                                       save_probabilities: bool = False,):
-                                       # TS: str = None,
-                                       # other_cal: str = None):
+                                       save_probabilities: bool = False):
 
         if isinstance(list_of_lists_or_source_folder, str):
             list_of_lists_or_source_folder = create_lists_from_splitted_dataset_folder(list_of_lists_or_source_folder,
@@ -219,8 +223,7 @@ class nnUNetPredictor(object):
                            folder_with_segs_from_prev_stage: str = None,
                            num_parts: int = 1,
                            part_id: int = 0,
-                           TS: str =None,
-                           other_cal: str = None):
+                           other_cal: str =None):
         """
         This is nnU-Net's default function for making predictions. It works best for batch predictions
         (predicting many images at once).
@@ -228,22 +231,16 @@ class nnUNetPredictor(object):
         # ---------------------------------
         ## output ##
         base_name = os.path.basename(output_folder_or_list_of_truncated_output_files)
-        if TS is not None: # 'test'->'test_TS'
-            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+f"_TS_{TS}") # JJ
-        elif other_cal=='IR': # 'test'->'test_IR'
-            output_folder_or_list_of_truncated_output_files = output_folder_or_list_of_truncated_output_files.replace(base_name,base_name+"_IR")
-
         ## source ##
         root_raw = os.environ.get('nnUNet_raw')
         list_of_lists_or_source_folder = os.path.normpath(list_of_lists_or_source_folder)# remove end /
         fold_n = os.path.basename(list_of_lists_or_source_folder) # fold_0
         dataset_name = list_of_lists_or_source_folder.strip("/").split("/")[-3] # Dataset137_BraTS2021
-        if "test" in output_folder_or_list_of_truncated_output_files:
-            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesTs',fold_n)
-        elif "validation" in output_folder_or_list_of_truncated_output_files:
-            list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal_ece', fold_n)
-        else:
-            assert "Informal Path: should be validation or test"
+        # list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal',fold_n)
+        # labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal', fold_n)
+        ## Apr.26
+        list_of_lists_or_source_folder = os.path.join(root_raw, dataset_name, 'imagesVal_TS', fold_n)  # TS
+        labels_folder = os.path.join(root_raw, dataset_name, 'labelsVal_TS', fold_n)  # TS
         # ---------------------------------
         if isinstance(output_folder_or_list_of_truncated_output_files, str):
             output_folder = output_folder_or_list_of_truncated_output_files
@@ -278,17 +275,16 @@ class nnUNetPredictor(object):
         list_of_lists_or_source_folder, output_filename_truncated, seg_from_prev_stage_files = \
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
-                                                folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,save_probabilities)
-                                                # save_probabilities, TS, IR)
+                                                folder_with_segs_from_prev_stage, overwrite, part_id, num_parts,
+                                                save_probabilities)
         if len(list_of_lists_or_source_folder) == 0:
             return
-
         data_iterator = self._internal_get_data_iterator_from_lists_of_filenames(list_of_lists_or_source_folder,
                                                                                  seg_from_prev_stage_files,
                                                                                  output_filename_truncated,
                                                                                  num_processes_preprocessing)
-
-        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export)
+        # print(output_folder) # nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test
+        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export, other_cal, labels_folder, output_folder)
 
     def _internal_get_data_iterator_from_lists_of_filenames(self,
                                                             input_list_of_lists: List[List[str]],
@@ -299,7 +295,6 @@ class nnUNetPredictor(object):
                                                 output_filenames_truncated, self.plans_manager, self.dataset_json,
                                                 self.configuration_manager, num_processes, self.device.type == 'cuda',
                                                 self.verbose_preprocessing)
-
 
     def get_data_iterator_from_raw_npy_data(self,
                                             image_or_list_of_images: Union[np.ndarray, List[np.ndarray]],
@@ -361,15 +356,22 @@ class nnUNetPredictor(object):
     def predict_from_data_iterator(self,
                                    data_iterator,
                                    save_probabilities: bool = False,
-                                   num_processes_segmentation_export: int = default_num_processes):
+                                   num_processes_segmentation_export: int = default_num_processes,
+                                   other_cal: str = 'IR',
+                                   labels_folder: str = None,
+                                   output_folder: str = None,
+                                   ):
         """
         each element returned by data_iterator must be a dict with 'data', 'ofile' and 'data_properties' keys!
         If 'ofile' is None, the result will be returned instead of written to a file
         """
+
         with multiprocessing.get_context("spawn").Pool(num_processes_segmentation_export) as export_pool:
-            worker_list = [i for i in export_pool._pool]
-            r = []
+            logits_val_list, labels_val_list = [],[]
+            prob_test_list = []
+            i = 0
             for preprocessed in data_iterator:
+                i+=1
                 data = preprocessed['data']
                 if isinstance(data, str):
                     delfile = data
@@ -377,56 +379,41 @@ class nnUNetPredictor(object):
                     os.remove(delfile)
 
                 ofile = preprocessed['ofile']
-                if ofile is not None:
-                    print(f'\nPredicting {os.path.basename(ofile)}:')
-                else:
-                    print(f'\nPredicting image of shape {data.shape}:')
+                file_name = os.path.basename(ofile)
+                bbox = preprocessed['data_properties']['bbox_used_for_cropping']
+                print(f'\nPredicting {file_name}:')
+                # pred_val
+                pred_logits_val = self.predict_logits_from_preprocessed_data(data).permute(1,2,3,0) # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
+                # label_val
+                img_tmp = nib.load(join(labels_folder, file_name+self.dataset_json['file_ending']))
+                label_val = torch.from_numpy(img_tmp.get_fdata()).permute(2, 0, 1).to('cuda')
+                label_val_crop = label_val[bbox[0][0]:bbox[0][1],bbox[1][0]:bbox[1][1],bbox[2][0]:bbox[2][1]]
+                # append
+                logits_val_list.append(pred_logits_val.reshape(-1, 4))
+                labels_val_list.append(label_val_crop.reshape(-1))
+                # if i>5:break
 
-                print(f'perform_everything_on_device: {self.perform_everything_on_device}')
+            # logits_val, labels_val = torch.cat(logits_val_list, dim=0).to('cuda'), torch.cat(labels_val_list,dim=0).long().to('cuda')
+            logits_val, labels_val = torch.cat(logits_val_list, dim=0), torch.cat(labels_val_list,dim=0).long()
 
-                properties = preprocessed['data_properties']
 
-                # let's not get into a runaway situation where the GPU predicts so fast that the disk has to b swamped with
-                # npy files
-                proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
-                while not proceed:
-                    sleep(0.1)
-                    proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
+            os.path.dirname(os.path.dirname(ofile))
+            if other_cal=="IR":
+                from nnunetv2.inference.other_post_hoc import get_scores_after_isotonic
+                calibrator = get_scores_after_isotonic(logits_val, labels_val, os.path.dirname(os.path.dirname(ofile)))
 
-                prediction = self.predict_logits_from_preprocessed_data(data).cpu() # data[4,146,171,136] w 4 modalities, prediction[3,146,171,136] w 3 labels
+            elif other_cal=="Dirichlet": ## list
+                from nnunetv2.inference.other_post import get_scores_after_direchlet
+                
+                
 
-                if ofile is not None:
-                    print('sending off prediction to background worker for resampling and export')
-                    r.append(
-                        export_pool.starmap_async(
-                            export_prediction_from_logits,
-                            ((prediction, properties, self.configuration_manager, self.plans_manager,
-                              self.dataset_json, ofile, save_probabilities, self.other_cal),)
-                        )
-                    )
-                else:
-                    print('sending off prediction to background worker for resampling')
-                    r.append(
-                        export_pool.starmap_async(
-                            convert_predicted_logits_to_segmentation_with_correct_shape, (
-                                (prediction, self.plans_manager,
-                                 self.configuration_manager, self.label_manager,
-                                 properties,
-                                 save_probabilities),)
-                        )
-                    )
-                if ofile is not None:
-                    print(f'done with {os.path.basename(ofile)}')
-                else:
-                    print(f'\nDone with image of shape {data.shape}:')
-            ret = [i.get()[0] for i in r]
 
         if isinstance(data_iterator, MultiThreadedAugmenter):
             data_iterator._finish()
 
-        compute_gaussian.cache_clear()# clear lru cache
+        compute_gaussian.cache_clear()        # clear lru cache
         empty_cache(self.device)# clear device cache
-        return ret
+        return calibrator
 
     def predict_single_npy_array(self, input_image: np.ndarray, image_properties: dict,
                                  segmentation_previous_stage: np.ndarray = None,
@@ -544,10 +531,6 @@ class nnUNetPredictor(object):
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
         prediction = self.network(x)
-        # print(self.temperature, '!!!') # JJ
-        if self.temperature is not None:
-            prediction = prediction / self.temperature  # TS
-
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
             # x should be 5d for 3d images and 4d for 2d. so the max value of mirror_axes cannot exceed len(x.shape) - 3
@@ -626,12 +609,6 @@ class nnUNetPredictor(object):
 
             empty_cache(self.device)
 
-            # Autocast can be annoying
-            # If the device_type is 'cpu' then it's slow as heck on some CPUs (no auto bfloat16 support detection)
-            # and needs to be disabled.
-            # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False
-            # is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
-            # So autocast will only be active if we have a cuda device.
             with torch.autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
                 assert input_image.ndim == 4, 'input_image must be a 4D np.ndarray or torch.Tensor (c, x, y, z)'
 
@@ -666,7 +643,7 @@ class nnUNetPredictor(object):
                 predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
         return predicted_logits
 
-    def predict_from_files_sequential(self, # JJ: no_use
+    def predict_from_files_sequential(self,
                            list_of_lists_or_source_folder: Union[str, List[List[str]]],
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
@@ -711,8 +688,8 @@ class nnUNetPredictor(object):
         list_of_lists_or_source_folder, output_filename_truncated, seg_from_prev_stage_files = \
             self._manage_input_and_output_lists(list_of_lists_or_source_folder,
                                                 output_folder_or_list_of_truncated_output_files,
-                                                folder_with_segs_from_prev_stage, overwrite, 0, 1,save_probabilities)
-                                                # save_probabilities, TS, IR)
+                                                folder_with_segs_from_prev_stage, overwrite, 0, 1,
+                                                save_probabilities)
         if len(list_of_lists_or_source_folder) == 0:
             return
 
@@ -753,123 +730,6 @@ class nnUNetPredictor(object):
         empty_cache(self.device)
         return ret
 
-
-def predict_entry_point_modelfolder(): # JJ: no_use
-    import argparse
-    parser = argparse.ArgumentParser(description='Use this to run inference with nnU-Net. This function is used when '
-                                                 'you want to manually specify a folder containing a trained nnU-Net '
-                                                 'model. This is useful when the nnunet environment variables '
-                                                 '(nnUNet_results) are not set.')
-    parser.add_argument('-i', type=str, required=True,
-                        help='input folder. Remember to use the correct channel numberings for your files (_0000 etc). '
-                             'File endings must be the same as the training dataset!')
-    parser.add_argument('-o', type=str, required=True,
-                        help='Output folder. If it does not exist it will be created. Predicted segmentations will '
-                             'have the same name as their source images.')
-    parser.add_argument('-m', type=str, required=True,
-                        help='Folder in which the trained model is. Must have subfolders fold_X for the different '
-                             'folds you trained')
-    parser.add_argument('-f', nargs='+', type=str, required=False, default=(0, 1, 2, 3, 4),
-                        help='Specify the folds of the trained model that should be used for prediction. '
-                             'Default: (0, 1, 2, 3, 4)')
-    parser.add_argument('-step_size', type=float, required=False, default=0.5,
-                        help='Step size for sliding window prediction. The larger it is the faster but less accurate '
-                             'the prediction. Default: 0.5. Cannot be larger than 1. We recommend the default.')
-    parser.add_argument('--disable_tta', action='store_true', required=False, default=False,
-                        help='Set this flag to disable test time data augmentation in the form of mirroring. Faster, '
-                             'but less accurate inference. Not recommended.')
-    parser.add_argument('--verbose', action='store_true', help="Set this if you like being talked to. You will have "
-                                                               "to be a good listener/reader.")
-    parser.add_argument('--save_probabilities', action='store_true',
-                        help='Set this to export predicted class "probabilities". Required if you want to ensemble '
-                             'multiple configurations.')
-    parser.add_argument('--continue_prediction', '--c', action='store_true',
-                        help='Continue an aborted previous prediction (will not overwrite existing files)')
-    parser.add_argument('-chk', type=str, required=False, default='checkpoint_final.pth',
-                        help='Name of the checkpoint you want to use. Default: checkpoint_final.pth')
-    parser.add_argument('-npp', type=int, required=False, default=3,
-                        help='Number of processes used for preprocessing. More is not always better. Beware of '
-                             'out-of-RAM issues. Default: 3')
-    parser.add_argument('-nps', type=int, required=False, default=3,
-                        help='Number of processes used for segmentation export. More is not always better. Beware of '
-                             'out-of-RAM issues. Default: 3')
-    parser.add_argument('-prev_stage_predictions', type=str, required=False, default=None,
-                        help='Folder containing the predictions of the previous stage. Required for cascaded models.')
-    parser.add_argument('-device', type=str, default='cuda', required=False,
-                        help="Use this to set the device the inference should run with. Available options are 'cuda' "
-                             "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
-                             "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_predict [...] instead!")
-    parser.add_argument('--disable_progress_bar', action='store_true', required=False, default=False,
-                        help='Set this flag to disable progress bar. Recommended for HPC environments (non interactive '
-                             'jobs)')
-    parser.add_argument('--TS', type=str, required=False, default=None,help='Temperature Scaling')
-    parser.add_argument('--other_cal', type=str, required=False, default=None,
-                        help='IR, Dirichlet')
-    print(
-        "\n#######################################################################\nPlease cite the following paper "
-        "when using nnU-Net:\n"
-        "Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). "
-        "nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. "
-        "Nature methods, 18(2), 203-211.\n#######################################################################\n")
-
-    args = parser.parse_args()
-    args.f = [i if i == 'all' else int(i) for i in args.f]
-
-    if not isdir(args.o):
-        maybe_mkdir_p(args.o)
-
-    assert args.device in ['cpu', 'cuda',
-                           'mps'], f'-device must be either cpu, mps or cuda. Other devices are not tested/supported. Got: {args.device}.'
-    if args.device == 'cpu':
-        # let's allow torch to use hella threads
-        import multiprocessing
-        torch.set_num_threads(multiprocessing.cpu_count())
-        device = torch.device('cpu')
-    elif args.device == 'cuda':
-        # multithreading in torch doesn't help nnU-Net if run on GPU
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
-        device = torch.device('cuda')
-    else:
-        device = torch.device('mps')
-    ## TS ##
-    temperature_from_json = None
-    if args.TS is not None:
-        # potential_TS_path=join(args.i, 'temperature.json')
-        potential_TS_path = join(args.i, f'temperature_{args.TS}.json') # JJ
-        print(f'loading temperature from {potential_TS_path}')
-        if os.path.exists(potential_TS_path):
-            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-            print(f"Temperature Scaling: loading {temperature_from_json}")
-        else:
-            raise FileNotFoundError(
-                f"Missing: {potential_TS_path}. Please check your model path."
-            )
-    ## IR ##
-    elif args.other_cal == 'IR':
-        print("Isotonic Regression here ...")
-    ## base_model ##
-    else:
-        print(f"No Post-hoc Calibration...")
-
-
-    predictor = nnUNetPredictor(tile_step_size=args.step_size,
-                                use_gaussian=True,
-                                use_mirroring=not args.disable_tta,
-                                perform_everything_on_device=True,
-                                device=device,
-                                verbose=args.verbose,
-                                allow_tqdm=not args.disable_progress_bar,
-                                verbose_preprocessing=args.verbose,
-                                temperature=temperature_from_json,
-                                other_cal=args.other_cal)
-    predictor.initialize_from_trained_model_folder(args.m, args.f, args.chk)
-    predictor.predict_from_files(args.i, args.o, save_probabilities=args.save_probabilities,
-                                 overwrite=not args.continue_prediction,
-                                 num_processes_preprocessing=args.npp,
-                                 num_processes_segmentation_export=args.nps,
-                                 folder_with_segs_from_prev_stage=args.prev_stage_predictions,
-                                 num_parts=1, part_id=0, TS=args.TS, other_cal=args.other_cal)
 
 
 def predict_entry_point():
@@ -937,10 +797,9 @@ def predict_entry_point():
                              'jobs)')
     parser.add_argument('--suffix', type=str, required=False, default='',
                         help='suffix to indicate training settings')
-    parser.add_argument('--TS', type=str, required=False, default=None,
-                        help='Temperature Scaling')
-    parser.add_argument('--other_cal', type=str, required=False, default=None,
-                        help='IR, Dirichlet')
+    parser.add_argument('--other_cal', type=str, required=True, default=None,
+                        help='calibration methods {IR, Dirichlet}')
+
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -974,24 +833,8 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
 
-    ## TS ##
-    temperature_from_json = None
-    if args.TS is not None:
-        potential_TS_path = join(args.i, f'temperature_{args.TS}.json')
-        print(f'loading temperature from {potential_TS_path}')
-        if os.path.exists(potential_TS_path):
-            temperature_from_json = json.load(open(potential_TS_path, 'r'))['temperature'][0]# in list
-            print(f"Temperature Scaling: loading {temperature_from_json}")
-        else:
-            raise FileNotFoundError(
-                f"Missing: {potential_TS_path}. Please check your model path."
-            )
-    ## IR ##
-    elif args.other_cal=='IR':
-        print("Isotonic Regression here ...")
-    ## base_model ##
-    else:
-        print(f"No Post-hoc Calibration...")
+    print(f"Post-hoc for {args.other_cal} ...")
+
 
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
@@ -1001,8 +844,7 @@ def predict_entry_point():
                                 verbose=args.verbose,
                                 verbose_preprocessing=args.verbose,
                                 allow_tqdm=not args.disable_progress_bar,
-                                temperature=temperature_from_json,
-                                other_cal=None)
+                                other_cal=args.other_cal)
     predictor.initialize_from_trained_model_folder(
         model_folder,
         args.f,
@@ -1014,8 +856,7 @@ def predict_entry_point():
                                  num_processes_segmentation_export=args.nps,
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
                                  num_parts=args.num_parts,
-                                 part_id=args.part_id,TS=args.TS,other_cal=args.other_cal)
-
+                                 part_id=args.part_id,other_cal=args.other_cal)
 
 
 if __name__ == '__main__':

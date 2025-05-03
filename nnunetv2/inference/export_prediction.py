@@ -74,7 +74,7 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
                                   plans_manager: PlansManager,
                                   dataset_json_dict_or_file: Union[dict, str], output_file_truncated: str,
                                   save_probabilities: bool = False,
-                                  IR: bool = False):
+                                  other_cal: str = None):
     if isinstance(dataset_json_dict_or_file, str):
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
@@ -88,7 +88,7 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
     if save_probabilities: # JJ
         segmentation_final, probabilities_final = ret
         ## IR ##
-        if IR:
+        if other_cal=="IR":
             # confidences = probs[np.arange(len(probs)), preds]
             # correct = (preds == labels.cpu().numpy()).astype(int)
             # iso_reg = IsotonicRegression(out_of_bounds='clip')

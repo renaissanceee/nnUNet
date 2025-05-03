@@ -6,17 +6,17 @@ from batchgenerators.utilities.file_and_folder_operations import subfiles, join,
 from typing import Tuple, List, Union, Optional, Any
 
 def gather_files(folder_pred, folder_ref, file_ending=".nii.gz", chill=False):
-    files_pred = subfiles(folder_pred, suffix=file_ending, join=False)
+    files_pred = subfiles(folder_pred.replace('_IR',''), suffix=file_ending, join=False)# JJ
     files_prob = subfiles(folder_pred, suffix=".npz", join=False)  # for probs
     files_ref = subfiles(folder_ref, suffix=file_ending, join=False)
 
     if not chill:
-        present = [isfile(join(folder_pred, i)) for i in files_ref]
+        present = [isfile(join(folder_pred.replace('_IR',''), i)) for i in files_ref]# JJ
         assert all(present), "Not all files in folder_ref exist in folder_pred"
 
     files_ref = [join(folder_ref, i) for i in files_pred]
-    files_pred = [join(folder_pred, i) for i in files_pred]
     files_prob = [join(folder_pred, i.replace("nii.gz", "npz")) for i in files_pred]
+    files_pred = [join(folder_pred.replace('_IR', ''), i) for i in files_pred]  # JJ
 
     return files_pred, files_prob, files_ref
 

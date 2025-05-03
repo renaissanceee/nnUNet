@@ -2,6 +2,7 @@ import torch
 from nnunetv2.evaluation.ece_kde import get_ece_kde
 import torch.nn.functional as F
 import os
+import numpy as np
 
 def fast_ece(y_true, y_pred, bins=10, device='cuda'):
     y_true, y_pred = y_true.to(device), y_pred.to(device)
@@ -42,6 +43,55 @@ def ece_loss(preds, labels, bins=15):
         if prop_in_bin.item() > 0:
             accuracy_in_bin = accuracies[in_bin].float().mean()
             avg_confidence_in_bin = confidences[in_bin].mean()
+            ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+    return ece
+#
+# def ece_loss_binary_1(preds, labels, bins=15):
+#     """
+#     preds: Tensor of shape [N, 1], confidence for class 1
+#     labels: Tensor of shape [N], values 0 or 1
+#     """
+#     preds = preds.squeeze(1)  # shape: [N]
+#     bin_boundaries = torch.linspace(0, 1, bins + 1, device=preds.device)
+#     bin_lowers = bin_boundaries[:-1]
+#     bin_uppers = bin_boundaries[1:]
+#
+#     # Round confidence to predicted class: > 0.5 -> class 1
+#     predictions = (preds >= 0.5).long()
+#     accuracies = predictions.eq(labels)
+#
+#     ece = torch.zeros(1, device=preds.device)
+#     for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+#         in_bin = preds.gt(bin_lower) * preds.le(bin_upper)
+#         prop_in_bin = in_bin.float().mean()
+#         if prop_in_bin.item() > 0:
+#             accuracy_in_bin = accuracies[in_bin].float().mean()
+#             avg_confidence_in_bin = preds[in_bin].mean()
+#             ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+#
+#     return ece
+
+def ece_loss_binary(preds, labels, bins=15):
+    """
+    preds: Tensor of shape [N, 1], confidence score from softmax for a single class
+    labels: Tensor of shape [N], binary labels: 1 if sample belongs to this class, else 0
+    """
+    preds = preds.squeeze(1)  # [N]
+    labels = labels.long()    # [N]
+
+    bin_boundaries = torch.linspace(0, 1, bins + 1, device=preds.device)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+
+    ece = torch.zeros(1, device=preds.device)
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = (preds > bin_lower) & (preds <= bin_upper)
+        # in_bin = preds.gt(bin_lower) * preds.le(bin_upper)  # Bool mask
+
+        prop_in_bin = in_bin.float().mean()
+        if prop_in_bin.item() > 0:
+            avg_confidence_in_bin = preds[in_bin].mean()
+            accuracy_in_bin = labels[in_bin].float().mean()
             ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
 
     return ece
@@ -119,8 +169,8 @@ def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, te
     # epsilon_x = fast_ece(tensor_wt_prob_map, tensor_wt_gt_map,bins=bins, device=device).to("cpu")
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1,1), tensor_wt_prob_map.reshape(-1,1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1), tensor_wt_gt_map.reshape(-1)  #.to(torch.int64)
-    epsilon_y = ece_loss(tensor_nec_prob_map, tensor_nec_gt_map, bins=15)
-    epsilon_x = ece_loss(tensor_wt_prob_map, tensor_wt_gt_map, bins=15)
+    epsilon_y = ece_loss_binary(tensor_nec_prob_map, tensor_nec_gt_map, bins=bins)
+    epsilon_x = ece_loss_binary(tensor_wt_prob_map, tensor_wt_gt_map, bins=bins)
     return epsilon_y, epsilon_x
 
 def detect_failure(paired_samples):
