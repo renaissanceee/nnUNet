@@ -23,7 +23,8 @@ def apply_isotonic_calibration(calibrator_dir, test_input_dir, test_output_dir, 
         for c in range(num_classes):
             class_prob = data[c]
             flat = class_prob.reshape(-1, 1)
-            scaled = MinMaxScaler().fit_transform(flat)
+            # scaled = MinMaxScaler().fit_transform(flat)
+            scaled = flat
             calibrated_flat = calibrators[c].transform(scaled)
             calibrated[c] = calibrated_flat.reshape(class_prob.shape)
 

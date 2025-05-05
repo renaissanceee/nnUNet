@@ -422,7 +422,8 @@ class nnUNetPredictor(object):
                 print(f'start to enumerate {self.max_iter} values ...')
                 loss_for_TS = nn.CrossEntropyLoss()
                 # temp_values = torch.linspace(1e-2, 3, steps=self.max_iter) # list
-                temp_values = torch.linspace(1e-2, 5, steps=self.max_iter)  # 100 points
+                # temp_values = torch.linspace(1e-2, 5, steps=self.max_iter)  # 1000 points
+                temp_values = torch.linspace(0.5, 5, steps=self.max_iter)  # 100 points
                 optim_temp, best_loss = -1, torch.finfo(torch.float).max
                 for temp in tqdm(temp_values, desc="Searching for optimal temperature"):
                     loss = loss_for_TS(logits_val/temp, labels_val)

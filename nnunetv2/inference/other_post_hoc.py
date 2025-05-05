@@ -29,11 +29,11 @@ def get_scores_after_isotonic(scores_val, labels_val, save_path):
     labels_val = labels_val.cpu().numpy()
 
     N, num_classes = scores_val.shape[0], scores_val.shape[1]
-    scaler = MinMaxScaler()# 归一化
-    scaled_scores_val = scaler.fit_transform(scores_val)
+    # scaler = MinMaxScaler()# 归一化
+    # scaled_scores_val = scaler.fit_transform(scores_val)
+    scaled_scores_val = scores_val
     # scaled_scores_test = scaler.transform(scores_test)
     # calibrated_scores_test = np.zeros_like(scores_test)
-
     # indices = np.random.choice(N, size=10000000, replace=False)# downsample
     # scores_val_sampled = scores_val[indices]
     # labels_val_sampled = labels_val[indices]
@@ -45,11 +45,6 @@ def get_scores_after_isotonic(scores_val, labels_val, save_path):
         calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
         calibrator.fit(y_score, y_true)
         joblib.dump(calibrator, join(save_path, f'isotonic_calibrator_class{class_idx}.pkl'))
-
-
-    # 对 test 分数做校准
-    # calibrator = joblib.load(join(save_path, f'isotonic_calibrator_class{class_idx}.pkl'))
-    # calibrated_scores_test[:, class_idx] = calibrator.predict(scaled_scores_test[:, class_idx])
     return calibrator
 
 

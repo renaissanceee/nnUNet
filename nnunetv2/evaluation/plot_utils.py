@@ -304,15 +304,16 @@ def plot_ratio_and_range(r_est, r_gt, bound, save_path, sigma="", name_list=[]):
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type):
-    # assert r_gt.shape[0] == bound.shape[0], "Shape mismatch between r_gt and bound"
-    # assert bound.shape[1] == 2, "bound should have shape [N, 2]"
+def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type,ece_percentage):
+    folder_save = join(folder_save, f"{ce_type}_plots_all", f"CE_{sigma}sigma__ratio_all")
     if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_all_1e4_{exp}", f"CE_{sigma}sigma__ratio_all") # 1e4
-    else:
-        folder_save = join(folder_save, f"{ce_type}_plots_all", f"CE_{sigma}sigma__ratio_all")
+        folder_save = join(folder_save, f"{ce_type}_plots_all_1e4", f"CE_{sigma}sigma__ratio_all") # 1e4
     os.makedirs(folder_save, exist_ok=True)
-    save_path = join(folder_save, f"ratio_and_range_all.png")
+    if ece_percentage is not None:
+        ece_percentage = f'_tile_{ece_percentage}'
+    else:
+        ece_percentage = ''
+    save_path = join(folder_save, f"ratio_and_range_all{ece_percentage}.png")
 
     r_gt = paired_samples['r_gt']['r_gt']
     # name_list = paired_samples['reference_file']
@@ -355,11 +356,15 @@ def plot_ratio_and_range_all(paired_samples, folder_save, sigma, ce_type):
     plt.close()
 
 
-def plot_corr_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__corr") # 1e4
+def plot_corr_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", ece_percentage=None):
+    if ece_percentage is not None:
+        ece_percentage = f'_tile_{ece_percentage}'
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__corr")
+        ece_percentage = ''
+    folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}", f"CE_{sigma}sigma__corr")
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_1e4", f"CE_{sigma}sigma__corr") # 1e4
+
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -376,11 +381,19 @@ def plot_corr_and_range_dataset(paired_samples, folder_save, sigma="", step_size
                          bound_second[start:end], save_path, sigma, name_list[start:end])
 
 
-def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", exp=1):
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4_{exp}", f"CE_{sigma}sigma__ce") # 1e4
+def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", ece_percentage=None):
+    # if ce_type=="kde":
+    #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4", f"CE_{sigma}sigma__ce") # 1e4
+    # else:
+    #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ce")
+    if ece_percentage is not None:
+        ece_percentage = f'_tile_{ece_percentage}'
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ce")
+        ece_percentage = ''
+    folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}", f"CE_{sigma}sigma__ce")
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_1e4", f"CE_{sigma}sigma__ce") # 1e4
+
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -396,11 +409,20 @@ def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=1
                           save_path, sigma, name_list[start:end])
 
 
-def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins"):
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4", f"CE_{sigma}sigma__ratio") # 1e4
+def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", ece_percentage=None):
+    # if ce_type=="kde":
+    #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4", f"CE_{sigma}sigma__ratio") # 1e4
+    # else:
+    #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ratio")
+
+    if ece_percentage is not None:
+        ece_percentage = f'_tile_{ece_percentage}'
     else:
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ratio")
+        ece_percentage = ''
+    folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}", f"CE_{sigma}sigma__ratio")
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_1e4", f"CE_{sigma}sigma__ratio") # 1e4
+
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -414,11 +436,22 @@ def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_siz
         save_path = join(folder_save, f"r_and_range_{end}.png")
         plot_ratio_and_range(r_est_naive[start:end], r_gt[start:end], bound_naive[start:end], save_path, sigma, name_list[start:end])
 
-def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', exp=1):
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4_{exp}") # 1e4
+def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', ece_percentage=None):
+    # if ce_type=="kde":
+    #     folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4") # 1e4
+    # else:
+    #     folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
+
+    if ece_percentage is not None:
+        ece_percentage = f'_tile_{ece_percentage}'
     else:
-        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
+        ece_percentage = ''
+    # folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}", f"CE_{sigma}sigma__ratio")
+    folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
+    if ce_type=="kde":
+        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4") # 1e4
+
+
     os.makedirs(folder_save, exist_ok=True)
 
     sigma_c = 1 if sigma=="" else sigma
@@ -427,7 +460,7 @@ def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', exp=
     save_path_bias = join(folder_save, f"bias_hist_{sigma}sigma.png")
     plot_histogram_bias(bias, title=f'Overall Ratio Bias (±{sigma}$\\sigma$)',   # Bias
                xlabel='Ratio Bias', save_path=save_path_bias, color='skyblue')
-    save_path_range = join(folder_save, f"range_hist_{sigma}sigma.png")
+    save_path_range = join(folder_save, f"range_hist_{sigma}sigma{ece_percentage}.png")
 
     ## Apr.23
     range_color = '#ba68c8' # 'darkseagreen' # 'limegreen'

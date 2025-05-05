@@ -3,6 +3,7 @@ from nnunetv2.evaluation.ece_kde import get_ece_kde
 import torch.nn.functional as F
 import os
 import numpy as np
+from nnunetv2.evaluation.ece_label_shift import get_importance_weights,EceLabelShift
 
 def fast_ece(y_true, y_pred, bins=10, device='cuda'):
     y_true, y_pred = y_true.to(device), y_pred.to(device)
@@ -45,31 +46,6 @@ def ece_loss(preds, labels, bins=15):
             avg_confidence_in_bin = confidences[in_bin].mean()
             ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
     return ece
-#
-# def ece_loss_binary_1(preds, labels, bins=15):
-#     """
-#     preds: Tensor of shape [N, 1], confidence for class 1
-#     labels: Tensor of shape [N], values 0 or 1
-#     """
-#     preds = preds.squeeze(1)  # shape: [N]
-#     bin_boundaries = torch.linspace(0, 1, bins + 1, device=preds.device)
-#     bin_lowers = bin_boundaries[:-1]
-#     bin_uppers = bin_boundaries[1:]
-#
-#     # Round confidence to predicted class: > 0.5 -> class 1
-#     predictions = (preds >= 0.5).long()
-#     accuracies = predictions.eq(labels)
-#
-#     ece = torch.zeros(1, device=preds.device)
-#     for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
-#         in_bin = preds.gt(bin_lower) * preds.le(bin_upper)
-#         prop_in_bin = in_bin.float().mean()
-#         if prop_in_bin.item() > 0:
-#             accuracy_in_bin = accuracies[in_bin].float().mean()
-#             avg_confidence_in_bin = preds[in_bin].mean()
-#             ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
-#
-#     return ece
 
 def ece_loss_binary(preds, labels, bins=15):
     """
@@ -117,11 +93,6 @@ def get_ece_kde_sub(f, y, bandwidth, p, mc_type, device, sub=1e4):
     batch_ratio = get_ece_kde(batch_f, batch_y, bandwidth, p, mc_type, device).to("cpu")
     return batch_ratio
 
-
-def get_ece_bins(f, y, bins, device):
-    f, y = f.squeeze(1).to(device), y.to(device)
-    return fast_ece(f, y, bins=bins, device=device).to("cpu")
-
 def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, p):
     print(f"Analyzing ece_kde with l-{p}...")
     # 1d_kde
@@ -163,10 +134,6 @@ def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_
 
 def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, bins):
     print(f"Analyzing ece_bins ...")
-    # tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1), tensor_wt_prob_map.reshape(-1)
-    # tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(-1).to(torch.int64)
-    # epsilon_y = fast_ece(tensor_nec_prob_map, tensor_nec_gt_map,bins=bins, device=device).to("cpu")  # binary: 0 vs 2
-    # epsilon_x = fast_ece(tensor_wt_prob_map, tensor_wt_gt_map,bins=bins, device=device).to("cpu")
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1,1), tensor_wt_prob_map.reshape(-1,1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1), tensor_wt_gt_map.reshape(-1)  #.to(torch.int64)
     epsilon_y = ece_loss_binary(tensor_nec_prob_map, tensor_nec_gt_map, bins=bins)
@@ -189,3 +156,40 @@ def detect_failure(paired_samples):
     return case_ids[out_of_bound('bound__ce+1std')], \
            case_ids[out_of_bound('bound__ce+2std')], \
            case_ids[out_of_bound('bound__ce+3std')]
+
+def calc_label_shift(tensor_nec_prob_map, tensor_wt_prob_map, tensor_seg_prob_map, source_dict):
+    estimator = EceLabelShift(adaptive_bins=True, n_bins=15, p=1, classwise=True)
+    # source_dict = {'nec_prob_map_source': nec_prob_map_source, 'wt_prob_map_source': wt_prob_map_source,
+    #                'nec_gt_map_source': nec_gt_map_source, 'wt_gt_map_source': wt_gt_map_source,
+    #                'preds_source':preds_source, 'labels_source_one_hot':labels_source_one_hot,
+    #                'interested_region':interested_region}
+    
+    ## source
+    nec_prob_map_source, wt_prob_map_source = source_dict['nec_prob_map_source'], source_dict['wt_prob_map_source']
+    nec_gt_map_source, wt_gt_map_source = source_dict['nec_gt_map_source'], source_dict['wt_gt_map_source']
+    interested_region = source_dict['interested_region']
+    labels_source_one_hot = source_dict['labels_source_one_hot']
+    preds_source = source_dict['preds_source']
+    ## weights
+    # import pdb;pdb.set_trace()
+    tensor_seg_prob_map = tensor_seg_prob_map.permute(1, 2, 3, 0).reshape(-1, 4)
+    output = get_importance_weights(preds_source.numpy(), labels_source_one_hot.numpy(), tensor_seg_prob_map.numpy())  # [N,4]
+    weights = torch.tensor(output["weights"])  ## print("four class weights: ", weights)
+    # print("four class weights: ", [f"{w:.6g}" for w in weights.tolist()])
+    nec_weight, wt_weight = weights[list(interested_region)].sum(dim=0), weights[list((1,2,3))].sum(dim=0)
+    
+    device = 'cuda'
+    nec_ece = estimator(
+        preds_target=tensor_nec_prob_map.reshape(-1).to(device),
+        preds_source=nec_prob_map_source.reshape(-1).to(device),
+        labels_source=nec_gt_map_source.reshape(-1).to(device),
+        weights=nec_weight.to(device) # for necrosis
+    )
+    wt_ece = estimator(
+        preds_target=tensor_wt_prob_map.reshape(-1).to(device),
+        preds_source=wt_prob_map_source.reshape(-1).to(device),
+        labels_source=wt_gt_map_source.reshape(-1).to(device),
+        weights=wt_weight.to(device) # for wt
+    )
+    return nec_ece,wt_ece
+    # return torch.tensor(nec_ece), torch.tensor(wt_ece)
