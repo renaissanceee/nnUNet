@@ -4,8 +4,9 @@ from abstention.calibration import TempScaling
 from abstention.label_shift import RLLSImbalanceAdapter
 import torch.nn as nn
 
+
 def get_importance_weights(valid_preds, valid_labels, shifted_test_preds):
-    imbalance_adapter = RLLSImbalanceAdapter()# "rlls-hard"
+    imbalance_adapter = RLLSImbalanceAdapter()  # "rlls-hard"
     imbalance_adapter_func = imbalance_adapter(
         valid_labels=valid_labels,
         tofit_initial_posterior_probs=shifted_test_preds,
@@ -17,6 +18,22 @@ def get_importance_weights(valid_preds, valid_labels, shifted_test_preds):
         "weights": imbalance_adapter_func.multipliers,
         "adapted_test_pred": adapted_shifted_test_preds,
     }
+
+
+def compute_true_w(train_labels, test_labels, n_class=10):
+    mu_y_train = np.zeros(n_class)
+    train_size = len(train_labels)
+    test_size = len(test_labels)
+    for i in range(n_class):
+        mu_y_train[i] = float(len(np.where(train_labels == i)[0])) / train_size
+    mu_y_test = np.zeros(n_class)
+    for i in range(n_class):
+        mu_y_test[i] = float(len(np.where(test_labels == i)[0])) / test_size
+    true_w = mu_y_test / mu_y_train
+
+    return torch.tensor(true_w)
+
+
 class EceLabelShift(nn.Module):
     """
     Compute ECE (Expected Calibration Error) under label shift
@@ -66,12 +83,12 @@ class EceLabelShift(nn.Module):
         return tmp_sum / len(confidences_target)
 
     def get_ece_top_label(
-        self,
-        confidences_source,
-        confidences_target,
-        labels_source,
-        predictions_source,
-        weights,
+            self,
+            confidences_source,
+            confidences_target,
+            labels_source,
+            predictions_source,
+            weights,
     ):
         tmp_sum = torch.zeros(1, device=confidences_source.device)
         for bin_lower, bin_upper in zip(self.bin_lowers, self.bin_uppers):
@@ -96,7 +113,7 @@ class EceLabelShift(nn.Module):
                         labels_source_in_bin_per_class_idx
                     ]
                     weighted_num += (
-                        weights[c] * class_mask_in_bin_per_class.float().sum()
+                            weights[c] * class_mask_in_bin_per_class.float().sum()
                     )
 
                 cond_expect = normalizer * weighted_num / (in_bin_target.sum() - 1)
@@ -117,7 +134,6 @@ class EceLabelShift(nn.Module):
         )
         return per_volume_ece
 
-
 ## ---------------------------------------------- ##
 # output = get_importance_weights(preds_source, labels_source, preds_target)# prob [N,4]
 # weights = torch.tensor(output["weights"])
@@ -129,7 +145,7 @@ class EceLabelShift(nn.Module):
 #     weights=weights[2], # for necrosis
 # )
 
-               
+
 ### example (boot+label-shift)
 # ece_label_shift_estimator = BootstrapMeanVarEstimator(
 #     estimator=EceLabelShift(

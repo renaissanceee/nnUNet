@@ -209,7 +209,6 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
     ax.set_facecolor('#e6e9f0')  
     ax.set_xlabel('Volume', fontsize=font_size)
     ax.set_ylabel('Ratio', fontsize=font_size)
-    # ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), fontsize=font_size)
     ########################################
     ice_handle = Rectangle(
         (0, 0),  # x, y 坐标（不影响图例）

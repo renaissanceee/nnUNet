@@ -82,7 +82,6 @@ nnUNetv2_move_plans_between_datasets = "nnunetv2.experiment_planning.plans_for_p
 nnUNetv2_evaluate_folder = "nnunetv2.evaluation.evaluate_predictions:evaluate_folder_entry_point"
 nnUNetv2_ratio_estimator = "nnunetv2.evaluation.ratio_estimator:evaluate_folder_entry_point"
 nnUNetv2_ratio_estimator_normal = "nnunetv2.evaluation.ratio_estimator_normal:evaluate_folder_entry_point"
-nnUNetv2_ratio_estimator_kde = "nnunetv2.evaluation.ratio_estimator_kde:evaluate_folder_entry_point"
 nnUNetv2_ratio_estimator_downsample = "nnunetv2.evaluation.ratio_estimator_downsample:evaluate_folder_entry_point"
 nnUNetv2_ratio_estimator_slice = "nnunetv2.evaluation.ratio_estimator_slice:evaluate_folder_entry_point"
 nnUNetv2_evaluate_simple = "nnunetv2.evaluation.evaluate_predictions:evaluate_simple_entry_point"
