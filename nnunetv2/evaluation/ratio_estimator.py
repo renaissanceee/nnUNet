@@ -32,10 +32,10 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
     # r and std
     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
                                                                                           tensor_wt_prob_map)
-    r_naive, r_1_ord_corr, r_2_ord_corr = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y,
-                                                     n)
-    var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
-    sigma_r = var_r ** 0.5
+    r_naive, r_1_ord_corr, r_2_ord_corr = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y,n)
+    # var_r = (y_bar ** 2 / x_bar ** 4 * var_x + var_y / x_bar ** 2 - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+    mse = (y_bar / x_bar ** 4 * var_x + var_y / x_bar - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
+    sigma_r = 2* (mse ** 0.5)
     #####################
     if 'kde' in ce_type:
         p = int(re.search(r'\d+', ce_type).group())
@@ -177,7 +177,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240) within [0,1]
     ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
 
-    print(f"calculate r for {os.path.basename(reference_file)}")
+    # print(f"calculate r for {os.path.basename(reference_file)}")
     interested_region = (2,) if biomarker == 'ntr' else (2, 3)
 
     "analyze mean/var"
@@ -286,12 +286,15 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         folder_save = join(folder_pred, f"ratio_metrics_binary_{biomarker}")
 
     os.makedirs(folder_save, exist_ok=True)
-    # if 'test' in folder_pred and ce_type!='bs' and ce_type!='kde2':
-    if 'test' in folder_pred and ce_type != 'bs' and ce_type != 'label_shift' and ce_type != 'label_shift_ece':
+    if 'test' in folder_pred and ce_type != 'bs':
         path_ece_json = join(folder_save.replace('test', 'validation_ece'), f"{ce_type}_{output_file}")
         if 'binary' in path_ece_json:
             path_ece_json = path_ece_json.replace('binary', 'prob')  # ECE_interval still from prob
-        print(f'loading epsilon from {path_ece_json}')  # bins15_ratio.json
+        # print(f'loading epsilon from {path_ece_json}')  # bins15_ratio.json
+        if isfile(path_ece_json):
+            mean_ece = load_json(path_ece_json)
+        else:
+            mean_ece = load_json(path_ece_json.replace('_chebyshev',''))
         epsilon_y_mean_ece = mean_ece[f'mean_ece_{ce_type}']['epsilon_y']
         epsilon_x_mean_ece = mean_ece[f'mean_ece_{ce_type}']['epsilon_x']
     else:  # elif 'validation' in folder_pred:
@@ -299,36 +302,36 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     files_pred, files_prob, files_ref = gather_files(folder_pred, folder_ref, ".nii.gz", chill)
     source_dict = None
 
-    if ce_type == 'label_shift':  # -> get_source_dict
-        truncated = True
-        interested_region = (2,) if biomarker == 'ntr' else (2, 3)
-        preds_source_list = subfiles(folder_pred.replace('test', 'validation_ece'), suffix='.npz', join=True)
-        labels_source_list = subfiles(folder_ref.replace('labelsTs', 'labelsVal_ece'), suffix='.nii.gz', join=True)
-        if truncated:
-            preds_source_list, labels_source_list = preds_source_list[:20], labels_source_list[:20]  # 20
-
-        preds_source, labels_source = cat_all_source_files(preds_source_list, labels_source_list)
-        labels_source_one_hot = convert_labels_to_one_hot(labels_source)  # [N]->[N,4]
-        ## dict 
-        nec_prob_map_source = preds_source[:, list(interested_region)].sum(dim=1)
-        nec_gt_map_source, _ = region_or_label_to_mask(labels_source, interested_region)
-        nec_gt_map_source = torch.from_numpy(nec_gt_map_source)
-
-        wt_prob_map_source = preds_source[:, list((1, 2, 3))].sum(dim=1)
-        wt_gt_map_source, _ = region_or_label_to_mask(labels_source, (1, 2, 3))
-        wt_gt_map_source = torch.from_numpy(wt_gt_map_source)
-        source_dict = {'nec_prob_map_source': nec_prob_map_source, 'wt_prob_map_source': wt_prob_map_source,
-                       'nec_gt_map_source': nec_gt_map_source, 'wt_gt_map_source': wt_gt_map_source,
-                       'preds_source': preds_source, 'labels_source_one_hot': labels_source_one_hot,
-                       'interested_region': interested_region}
+    # if ce_type == 'label_shift':  # -> get_source_dict
+    #     truncated = True
+    #     interested_region = (2,) if biomarker == 'ntr' else (2, 3)
+    #     preds_source_list = subfiles(folder_pred.replace('test', 'validation_ece'), suffix='.npz', join=True)
+    #     labels_source_list = subfiles(folder_ref.replace('labelsTs', 'labelsVal_ece'), suffix='.nii.gz', join=True)
+    #     if truncated:
+    #         preds_source_list, labels_source_list = preds_source_list[:20], labels_source_list[:20]  # 20
+    #
+    #     preds_source, labels_source = cat_all_source_files(preds_source_list, labels_source_list)
+    #     labels_source_one_hot = convert_labels_to_one_hot(labels_source)  # [N]->[N,4]
+    #     ## dict
+    #     nec_prob_map_source = preds_source[:, list(interested_region)].sum(dim=1)
+    #     nec_gt_map_source, _ = region_or_label_to_mask(labels_source, interested_region)
+    #     nec_gt_map_source = torch.from_numpy(nec_gt_map_source)
+    #
+    #     wt_prob_map_source = preds_source[:, list((1, 2, 3))].sum(dim=1)
+    #     wt_gt_map_source, _ = region_or_label_to_mask(labels_source, (1, 2, 3))
+    #     wt_gt_map_source = torch.from_numpy(wt_gt_map_source)
+    #     source_dict = {'nec_prob_map_source': nec_prob_map_source, 'wt_prob_map_source': wt_prob_map_source,
+    #                    'nec_gt_map_source': nec_gt_map_source, 'wt_gt_map_source': wt_gt_map_source,
+    #                    'preds_source': preds_source, 'labels_source_one_hot': labels_source_one_hot,
+    #                    'interested_region': interested_region}
     results = []
     ################################################
     i = 0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
                                    binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece, source_dict)
-        i += 1
-        if i > 10: break
+        # i += 1
+        # if i > 2: break
         results.append(result)
 
     ################################################
@@ -393,7 +396,13 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
                   'failure': failure,
                   'ratio_per_case': results,
                   }
-
+    
+        print('-----------------------------')
+        print('epsilon(y,x): ', epsilon_y_mean_ece*1000, epsilon_x_mean_ece*1000)
+        print('-----------------------------')
+        print('range: ',mean_r_range['r_naive'][0])
+        print('-----------------------------')
+        print("failure:", len(failure['std']))
         ## ratio.json
         save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
         # plot.json
@@ -406,9 +415,9 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         os.makedirs(join(folder_save, 'plot'), exist_ok=True)
         save_json(result_as_list, join(folder_save, 'plot', f"plot_{ce_type}_{output_file}"), sort_keys=False)
         # plot figures
-        sigmas = ['', 2, 3]
-        step_size = 10
-        for sigma in sigmas:
+        if 'fold_0' in folder_save:
+            sigma = ''
+            step_size = 10
             plot_corr_and_range_dataset(paired_samples, folder_save, sigma, step_size, ce_type,
                                         ece_percentage)  # r, r_corr
             plot_ce_and_range_dataset(paired_samples, folder_save, sigma, step_size, ce_type,
@@ -448,10 +457,10 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
 
     # maybe auto set output file
     if output_file is None and ece_percentage is None:
-        output_file = 'ratio.json'  # JJ
+        output_file = 'ratio_chebyshev.json'  # JJ
         # output_file = 'ratio_5_volumes_add_weight.json' # JJ_for_lascal
     if output_file is None and ece_percentage is not None:
-        output_file = f'ratio_tile{ece_percentage}.json'
+        output_file = f'ratio_chebyshev_tile{ece_percentage}.json'
 
     lm = PlansManager(plans_file).get_label_manager(dataset_json)
     compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
@@ -493,7 +502,7 @@ def evaluate_folder_entry_point():
         args.pred_folder = args.pred_folder.replace(basename, basename + f'_TS_{args.TS}')  # _TS_list_1000_new
     elif args.other_cal is not None:
         args.pred_folder = args.pred_folder.replace(basename, basename + f'_{args.other_cal}')  # _IR
-    print(f'calculating from ... {args.pred_folder}')
+    # print(f'calculating from ... {args.pred_folder}')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
                                chill=args.chill, binary=args.binary, biomarker=args.biomarker, ce_type=args.ce_type,
                                ece_percentage=args.ece_percentage)

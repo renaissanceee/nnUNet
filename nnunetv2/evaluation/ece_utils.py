@@ -100,7 +100,7 @@ def get_ece_kde_sub(f, y, bandwidth, p, mc_type, device, sub=1e4):
 
 
 def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, p):
-    print(f"Analyzing ece_kde with l-{p}...")
+    # print(f"Analyzing ece_kde with l-{p}...")
     # 1d_kde
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
@@ -116,7 +116,7 @@ def calc_ece_kde(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, ten
 
 
 def calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
-    print(f"Analyzing Brier_score ...")
+    # print(f"Analyzing Brier_score ...")
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1), tensor_wt_prob_map.reshape(-1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1).to(torch.int64), tensor_wt_gt_map.reshape(
         -1).to(torch.int64)
@@ -132,7 +132,7 @@ def calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tens
 
 
 def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
-    print(f"Analyzing NLL ...")
+    # print(f"Analyzing NLL ...")
     tensor_wt_prob_map = torch.clamp(tensor_wt_prob_map, min=0, max=1)
     epsilon_y = F.binary_cross_entropy(tensor_nec_prob_map.reshape(-1), tensor_nec_gt_map.reshape(-1).double(),
                                        reduction='mean')
@@ -142,7 +142,7 @@ def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_
 
 
 def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, bins):
-    print(f"Analyzing ece_bins ...")
+    # print(f"Analyzing ece_bins ...")
     tensor_nec_prob_map, tensor_wt_prob_map = tensor_nec_prob_map.reshape(-1, 1), tensor_wt_prob_map.reshape(-1, 1)
     tensor_nec_gt_map, tensor_wt_gt_map = tensor_nec_gt_map.reshape(-1), tensor_wt_gt_map.reshape(
         -1)  # .to(torch.int64)

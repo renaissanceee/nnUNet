@@ -464,5 +464,5 @@ def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', ece_
     ## Apr.23
     range_color = '#ba68c8' # 'darkseagreen' # 'limegreen'
     plot_histogram_range(range_ce, title=f'Overall Confidence Interval (±{sigma}$\\sigma$)', # Interval
-                   xlabel=f'Interval Length', save_path=save_path_range, color=range_color)
+                   xlabel=f'Interval Widthth', save_path=save_path_range, color=range_color)
 
