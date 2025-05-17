@@ -17,8 +17,7 @@ from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
-from nnunetv2.evaluation.ece_utils import calc_ece_kde, calc_bs, calc_v_bias, calc_nll, calc_ece_bins, detect_failure, \
-    ece_loss, calc_label_shift
+from nnunetv2.evaluation.ece_utils import calc_ece_bins, detect_failure
 from nnunetv2.evaluation.plot_utils import plot_corr_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset, \
     plot_ratio_and_range_dataset, plot_ratio_and_range_all
 from sklearn.metrics import accuracy_score, log_loss
@@ -77,41 +76,28 @@ def analyze_r_ce_std(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map,
 
 
 def analyze_r_ce_std_alpha(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map, tensor_seg_prob_map,
-                     tensor_seg_gt_map, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece, total_out_prob):
+                     tensor_seg_gt_map, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece, total_out_prob, alpha):
     # r and std
     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
                                                                                           tensor_wt_prob_map)
     r_naive, _, _ = estimate_r(y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y,n)
     mse = (y_bar / x_bar ** 4 * var_x + var_y / x_bar - 2 * y_bar / x_bar ** 3 * cov_x_y) / n
     mse = mse.item()
+
+    Q = alpha+total_out_prob
+    beta = (mse / alpha) ** 0.5
     y_bar, x_bar = y_bar.item(), x_bar.item()
-    # total_out_prob = 0.55 # 0.32
+
+    epsilon_y_q = np.quantile(epsilon_y_mean_ece, Q)
+    epsilon_x_q = np.quantile(epsilon_x_mean_ece, Q)
+
+    ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y_q, epsilon_x_q)
     #####################
-    min_width, opt_Q = 1e7, 1  # 初始化为无穷大
-    opt_ce_left, opt_ce_right = None, None
-    eps = 1e-7
-    for Q in np.linspace((total_out_prob+1+eps)/2, 1, num=20):
-        alpha = 2*Q - total_out_prob-1
-        # import pdb;pdb.set_trace()
-        beta = (mse / alpha) ** 0.5
-        epsilon_y_q = np.quantile(epsilon_y_mean_ece, Q)
-        epsilon_x_q = np.quantile(epsilon_x_mean_ece, Q)
-
-        ce_left, ce_right = get_ce_bound(y_bar, x_bar, epsilon_y_q, epsilon_x_q)
-
-        cur_width = ce_right + ce_left + 2 * beta
-
-        if cur_width < min_width:
-            min_width = cur_width
-            opt_Q = Q
-            opt_ce_left, opt_ce_right = ce_left, ce_right
-            opt_alpha = alpha
-    #####################
-    # print("Q: ", opt_Q)
-    # print("alpha: ",opt_alpha)
+    # print("Q: ", Q)
+    # print("alpha: ",alpha)
     # print("min_width: ", opt_ce_right+opt_ce_left)
     #####################
-    return r_naive.item(), opt_ce_left, opt_ce_right, beta, opt_Q, opt_alpha
+    return r_naive.item(), ce_left, ce_right, beta
 
 def calc_statistic(tensor_nec_prob_map, tensor_wt_prob_map):
     # mean/var
@@ -175,10 +161,9 @@ def update_r_keys_zero(results):
     return results
 
 
-def update_r_keys(results, key, r_est, r_gt, opt_Q, *bounds):
+def update_r_keys(results, key, r_est, r_gt, *bounds):
     (x_ce, y_ce, x_1std, y_1std) = bounds
     results['ratio'][key] = {
-        'opt_Q': opt_Q,
         'r_est': r_est,
         'r_bias': r_est - r_gt,
         'bound__ce': np.array([x_ce, y_ce]),
@@ -197,9 +182,9 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                       ce_type: str = "bins",
                       epsilon_y_mean_ece: float = None,
                       epsilon_x_mean_ece: float = None,
-                      alpha: float = None,
                       source_dict: dict = None,
                       total_out_prob: float = None,
+                      alpha: float=None,
                       ) -> dict:
     # load images
     seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
@@ -237,39 +222,25 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     tensor_seg_gt_map = torch.from_numpy(seg_ref)
 
     "reformulate r to see how interval(x,y) changes"
-    ## V-Bias
-    v_bias_y_L1, v_bias_x_L1 = calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map)
     # sigma
     y_bar, x_bar, cov_x_y, cov_x2_y, cov_y2_x, cov_x2_x, var_x, var_y, n = calc_statistic(tensor_nec_prob_map,
                                                                                           tensor_wt_prob_map)
     # calib-error（epsilon_y, epsilon_x
-    if alpha is not None:
-        r_naive, r_1_ord_corr, r_2_ord_corr, ce_left, ce_right, beta, epsilon_y, epsilon_x = analyze_r_ce_std(
-            tensor_nec_prob_map,
-            tensor_wt_prob_map,
-            tensor_nec_gt_map,
-            tensor_wt_gt_map,
-            tensor_seg_prob_map,
-            tensor_seg_gt_map,
-            ce_type,
-            epsilon_y_mean_ece,  # for bound
-            epsilon_x_mean_ece,
-            alpha,
-            source_dict)
-    else:
-        r_naive, ce_left, ce_right, beta, opt_Q, opt_alpha = analyze_r_ce_std_alpha(
-            tensor_nec_prob_map,
-            tensor_wt_prob_map,
-            tensor_nec_gt_map,
-            tensor_wt_gt_map,
-            tensor_seg_prob_map,
-            tensor_seg_gt_map,
-            ce_type,
-            epsilon_y_mean_ece,  # for bound
-            epsilon_x_mean_ece,
-            total_out_prob)
-        epsilon_y, epsilon_x = 0, 0
-        r_1_ord_corr, r_2_ord_corr = 0, 0
+
+    r_naive, ce_left, ce_right, beta = analyze_r_ce_std_alpha(
+        tensor_nec_prob_map,
+        tensor_wt_prob_map,
+        tensor_nec_gt_map,
+        tensor_wt_gt_map,
+        tensor_seg_prob_map,
+        tensor_seg_gt_map,
+        ce_type,
+        epsilon_y_mean_ece,  # for bound
+        epsilon_x_mean_ece,
+        total_out_prob,
+        alpha)
+    epsilon_y, epsilon_x = 0, 0
+    r_1_ord_corr, r_2_ord_corr = 0, 0
 
     # a prior is: r>0, which is appicable for confidence range
     #####################################
@@ -277,23 +248,19 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['reference_file'] = reference_file
     results['prediction_file'] = prediction_file
     results['probability_file'] = probability_file
-    results['ratio'] = {'r_gt': {}, 'v_bias': {}, f'epsilon_ece_{ce_type}': {},
+    results['ratio'] = {'r_gt': {}, f'epsilon_ece_{ce_type}': {},
                         'r_naive': {}}
     # gt
     r_gt = nec_gt_counter / wt_gt_counter
     results['ratio']['r_gt']['r_gt'] = r_gt
     results['ratio']['r_gt']['beta'] = beta
-    # V-Bias: y,x
-    # v_bias
-    results['ratio']['v_bias']['v_bias_y_L1'] = v_bias_y_L1
-    results['ratio']['v_bias']['v_bias_x_L1'] = v_bias_x_L1
     # CE: y,x
     results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_y'] = epsilon_y
     results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_x'] = epsilon_x
 
     # import pdb;pdb.set_trace()
     bounds_naive = generate_confidence_bounds(r_naive, ce_left, ce_right, beta)
-    update_r_keys(results, 'r_naive', r_naive, r_gt,opt_Q, *sum(bounds_naive, ()))
+    update_r_keys(results, 'r_naive', r_naive, r_gt,*sum(bounds_naive, ()))
     return results
 
 
@@ -330,97 +297,43 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     files_pred, files_prob, files_ref = gather_files(folder_pred, folder_ref, ".nii.gz", chill)
     source_dict = None
     alpha = None
-    results = []
     ################################################
-    i = 0
-    for ref, pred, prob in zip(files_ref, files_pred, files_prob):
-        result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
-                                   binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece, alpha=None,
-                                   source_dict = None, total_out_prob=total_out_prob)
-        # i += 1
-        # if i > 2: break
-        results.append(result)
+    # alpha_list = np.arange(0.1, 1-total_out_prob, 0.01) # np.linspace(0.1, 1-total_out_prob, num=10)
+    alpha_list = np.arange(0.1, 0.2, 0.01)
+    print("alphas: ",alpha_list)
+    range_list,failure_list = [],[]
+    for alpha in alpha_list:
+        i = 0
+        results = []
+        for ref, pred, prob in zip(files_ref, files_pred, files_prob):
+            result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
+                                       binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece,
+                                       None, total_out_prob, alpha)
+            # i += 1
+            # if i > 50: break
+            results.append(result)
 
-    ################################################
-    paired_samples = {'r_gt': {}, 'r_naive': {},'opt_Q':{},
-                      f'epsilon_ece_{ce_type}': {}, 'v_bias': {}}
-    # r_gt and ref.nii.gz
-    paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
-    paired_samples['reference_file'] = np.array([item['reference_file'] for item in results])  # [N,]
-    ## Range: as narrow as possible ##
-    mean_r_range = {}
-    mean_r_bias = {}
-    mean_opt_Q = {}
-    scores = ['r_naive']
-    for r in scores:
+        ################################################
+        paired_samples = {'r_gt': {}, 'r_naive': {},'reference_file':np.array([item['reference_file'] for item in results])}
+        paired_samples['r_gt']['r_gt'] = np.array([item['ratio']['r_gt']['r_gt'] for item in results])  # [N,]
+        r = 'r_naive'
         paired_samples[r]['bound__ce'] = np.array([item['ratio'][r]['bound__ce'] for item in results])  # [N,2]
-        paired_samples[r]['bound__ce+1std'] = np.array(
-            [item['ratio'][r]['bound__ce+1std'] for item in results])  # [N,2]
+        paired_samples[r]['bound__ce+1std'] = np.array([item['ratio'][r]['bound__ce+1std'] for item in results])  # [N,2]
         paired_samples[r]['range__ce+1std'] = np.array([item['ratio'][r]['range__ce+1std'] for item in results])  # [N,]
-        paired_samples[r]['bias_r'] = np.array([item['ratio'][r]['r_bias'] for item in results])
         paired_samples[r]['r_est'] = np.array([item['ratio'][r]['r_est'] for item in results])  # [N,]
-        # opt_Q
-        paired_samples[r]['opt_Q'] = np.array([item['ratio'][r]['opt_Q'] for item in results])  # opt_Q
-        mean_r_range[r] = np.mean(paired_samples[r]['range__ce+1std'], axis=0)
-        mean_r_bias[r] = np.mean(paired_samples[r]['bias_r'])
-        mean_opt_Q[r] = np.mean(paired_samples[r]['opt_Q'])
-    # cali-error for y and x
-    mean_epsilon = {}
-    paired_samples[f'epsilon_ece_{ce_type}']['epsilon_y'] = np.array(
-        [item['ratio'][f'epsilon_ece_{ce_type}']['epsilon_y'] for item in results])
-    paired_samples[f'epsilon_ece_{ce_type}']['epsilon_x'] = np.array(
-        [item['ratio'][f'epsilon_ece_{ce_type}']['epsilon_x'] for item in results])
-    mean_epsilon['epsilon_y'] = np.mean(paired_samples[f'epsilon_ece_{ce_type}']['epsilon_y'])
-    mean_epsilon['epsilon_x'] = np.mean(paired_samples[f'epsilon_ece_{ce_type}']['epsilon_x'])
+        mean_r_range = np.mean(paired_samples[r]['range__ce+1std'], axis=0)
 
-    if epsilon_y_mean_ece is not None:
-        # bias for y and x
-        mean_v_bias = {}
-        paired_samples['v_bias']['v_bias_y_L1'] = np.array([item['ratio']['v_bias']['v_bias_y_L1'] for item in results])
-        paired_samples['v_bias']['v_bias_x_L1'] = np.array([item['ratio']['v_bias']['v_bias_x_L1'] for item in results])
-        mean_v_bias['v_bias_y_L1'] = np.mean(paired_samples['v_bias']['v_bias_y_L1'])
-        mean_v_bias['v_bias_x_L1'] = np.mean(paired_samples['v_bias']['v_bias_x_L1'])
         # failure
         failure_1std = detect_failure(paired_samples)  # fail_case: outside the range
-        failure = {}
-        failure['std'] = failure_1std.tolist()
-        # sort for json
-        [recursive_fix_for_json_export(i) for i in results]
-        head_results = [mean_r_range, mean_r_bias, mean_epsilon, mean_v_bias, failure]
-        [recursive_fix_for_json_export(i) for i in head_results]
-
-        result = {f'mean_ece_{ce_type}': mean_epsilon, 'mean_v_bias': mean_v_bias,
-                  'mean_opt_Q':mean_opt_Q,
-                  'mean_r_bias': mean_r_bias,
-                  'mean_r_range__ce+123std': mean_r_range,
-                  'failure': failure,
-                  'ratio_per_case': results,
-                  }
+        failure_1std = failure_1std.tolist()
+        print('range: ',mean_r_range)
+        print("failure:", len(failure_1std))
         print('-----------------------------')
-        print('Q: ',mean_opt_Q['r_naive'])
-        print('-----------------------------')
-        print('range: ',mean_r_range['r_naive'])
-        print('-----------------------------')
-        print("failure:", len(failure['std']))
-        ## ratio.json
-        save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
-        # plot figures
-        if 'fold_0' in folder_save:
-            sigma = ''
-            step_size = 10
-            plot_bins_dataset(paired_samples, folder_save, sigma, ce_type,
-                              ece_percentage)  # "hist_of bias_and_range": bias_r, range
-            plot_ratio_and_range_dataset(paired_samples, folder_save, sigma, step_size, ce_type, ece_percentage)
-    else:
-        [recursive_fix_for_json_export(i) for i in results]
-        recursive_fix_for_json_export(mean_epsilon)
-        result = {f'mean_ece_{ce_type}': mean_epsilon,
-                  'ratio_per_case': results,
-                  }
-        save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)## ratio.json
-
-
-
+        range_list.append(mean_r_range)
+        failure_list.append(len(failure_1std))
+    import pdb;pdb.set_trace()
+    ## ratio.json
+    # save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
 
     return paired_samples[f'epsilon_ece_{ce_type}']  # ['epsilon_ece_kde']['epsilon_y'] and 'x' for 2 np.arrays
 
@@ -451,7 +364,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
     compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
                                 lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
                                 num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type,
-                                ece_percentage=ece_percentage, total_out_prob=0.68) # 0.68
+                                ece_percentage=ece_percentage, total_out_prob=0.55) # 0.68
 
 
 def evaluate_folder_entry_point():

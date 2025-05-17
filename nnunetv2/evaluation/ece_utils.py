@@ -164,10 +164,25 @@ def detect_failure(paired_samples):
         lower, upper = bounds[:, 0], bounds[:, 1]
         return (r_gt < lower) | (r_gt > upper)
 
+    return case_ids[out_of_bound('bound__ce+1std')]
+
+
+def detect_failure_all(paired_samples):
+    """Detect failure cases: r_gt falls outside of CE + Nσ bounds."""
+    r_gt = paired_samples['r_gt']['r_gt']
+    case_ids = np.array([
+        os.path.basename(name).split('_')[-1].split('.')[0]
+        for name in paired_samples['reference_file']
+    ])
+
+    def out_of_bound(mask_key):
+        bounds = paired_samples['r_naive'][mask_key]
+        lower, upper = bounds[:, 0], bounds[:, 1]
+        return (r_gt < lower) | (r_gt > upper)
+
     return case_ids[out_of_bound('bound__ce+1std')], \
         case_ids[out_of_bound('bound__ce+2std')], \
         case_ids[out_of_bound('bound__ce+3std')]
-
 
 def complement_tuple(a):
     full_set = {0, 1, 2, 3}

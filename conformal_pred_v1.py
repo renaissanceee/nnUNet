@@ -164,7 +164,8 @@ if __name__ == "__main__":
     parser.add_argument('--TS', required=False, default=None, type=str, help='temperature scaling')
     args = parser.parse_args()
 
-    root = f"/staging/leuven/stg_00081/jli/calibration/nnUNet_nested/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    # root = f"/staging/leuven/stg_00081/jli/calibration/nnUNet_nested/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    root = f"/scratch/leuven/372/vsc37255/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
     val_dir = join(root, "validation_ece/ratio_metrics_prob_ntr")
     test_dir = join(root, "test/ratio_metrics_prob_ntr")
     folder_root = join(root, f"test/ratio_metrics_prob_ntr")
@@ -211,12 +212,12 @@ if __name__ == "__main__":
     result = {'failure': failure, 'mean_r_range': mean_r_range,'interval_per_case':np.stack((lower, upper), axis=1).tolist()}
     save_json(result, join(folder_root, f"CP{args.CP}_ratio.json"), sort_keys=False) ## CP80_ratio.json
     print('Fail, Range:', len(failure), mean_r_range)
-    "plot"
-    step_size = 10
-    for start in range(0, len(test_r_est), step_size): #
-        end = start + step_size
-        intervals = list(zip(lower[start:end], upper[start:end]))
-        plot_conformal(test_r_est[start:end], test_r_gt[start:end], intervals, case_ids[start:end], save_path=join(folder_save, f"conformal_interval_{end}.png"))
+    if args.fold == '0':
+        step_size = 10
+        for start in range(0, len(test_r_est), step_size): #
+            end = start + step_size
+            intervals = list(zip(lower[start:end], upper[start:end]))
+            plot_conformal(test_r_est[start:end], test_r_gt[start:end], intervals, case_ids[start:end], save_path=join(folder_save, f"conformal_interval_{end}.png"))
 
 
 
