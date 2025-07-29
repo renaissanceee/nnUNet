@@ -2,9 +2,17 @@
 
 ## Pipeline
 ```
-source ~/.bashrc
+## BraTS21
+python nnunetv2/dataset_conversion/Dataset137_BraTS21.py
+source ~/.bashrc # -> change path
 nnUNetv2_plan_and_preprocess -d 137 --verify_dataset_integrity
 nnUNetv2_train → nnUNetv2_predict → nnUNetv2_ratio_estimator
+
+## KiT23
+python nnunetv2/dataset_conversion/Dataset220_KiTS2023.py /lustre1/project/stg_00081/jli/calibration/kits23/dataset
+source ~/.bashrc
+nnUNetv2_plan_and_preprocess -d 220 --verify_dataset_integrity
+...
 ```
 train → inference(CE, Ratio) → TS → inference(CE, Ratio)
 ```

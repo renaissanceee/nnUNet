@@ -119,8 +119,9 @@ class nnUNetTrainer(object):
             if nnUNet_preprocessed is not None else None
         # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_preprocessed/Dataset137_BraTS2021'
         self.output_folder_base = join(nnUNet_results, self.plans_manager.dataset_name,
-                                       self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration) \
+                                       self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration)+ "__" +str(random.randint(1, 10000)) \
             if nnUNet_results is not None else None
+        print(self.output_folder_base)
         # '/staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d'
         self.output_folder = join(self.output_folder_base, f'fold_{fold}')
         # '/staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d/fold_0'

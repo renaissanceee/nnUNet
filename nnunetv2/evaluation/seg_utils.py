@@ -22,6 +22,16 @@ def gather_files(folder_pred, folder_ref, file_ending=".nii.gz", chill=False):
     return files_pred, files_prob, files_ref
 
 
+def gather_files_seed(folder_pred, folder_ref, file_ending=".nii.gz"):
+    files_pred = subfiles(folder_pred, suffix=file_ending, join=False)  # JJ
+    files_prob = subfiles(folder_pred, suffix=".npz", join=False)  # for probs
+    files_ref = subfiles(folder_ref, suffix=file_ending, join=False)
+    files_ref = [join(folder_ref, i) for i in files_pred]
+    files_prob = [join(folder_pred, i.replace("nii.gz", "npz")) for i in files_pred]
+    files_pred = [join(folder_pred, i) for i in files_pred]
+
+    return files_pred, files_prob, files_ref
+
 def region_or_label_to_mask(segmentation: np.ndarray, region_or_label: Union[int, Tuple[int, ...]]) -> np.ndarray:
     if np.isscalar(region_or_label):
         return segmentation == region_or_label

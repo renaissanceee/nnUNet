@@ -418,7 +418,7 @@ def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_siz
 
     # min_width
     # folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_v_bias", f"CE_{sigma}sigma__ratio") # JJ
-    folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_min_width",
+    folder_save = join(folder_save, f"{ce_type}_step{step_size}_min_width{ece_percentage}",
                        f"CE_{sigma}sigma__ratio")
 
     if ce_type=="kde":
@@ -450,7 +450,7 @@ def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', ece_
     # folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
 
     # folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_v_bias") # JJ
-    folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_min_width")
+    folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_min_width{ece_percentage}")
 
     if ce_type=="kde":
         folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4") # 1e4

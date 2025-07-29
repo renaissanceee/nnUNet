@@ -32,7 +32,17 @@ from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 from nnunetv2.utilities.utils import create_lists_from_splitted_dataset_folder
+import torch.nn.functional as F
 
+
+class ConvDropoutBlock(nn.Module):
+    def __init__(self, conv: nn.Conv2d, dropout_p: float = 0.5):
+        super().__init__()
+        self.conv = conv
+        self.dropout = nn.Dropout2d(p=dropout_p)
+
+    def forward(self, x):
+        return self.dropout(self.conv(x))
 
 class nnUNetPredictor(object):
     def __init__(self,
@@ -118,7 +128,8 @@ class nnUNetPredictor(object):
         self.network = network
 
         # initialize network with first set of parameters, also see https://github.com/MIC-DKFZ/nnUNet/issues/2520
-        network.load_state_dict(parameters[0])
+        # network.load_state_dict(parameters[0])
+        network.load_state_dict(parameters[0], strict=False)
 
         self.dataset_json = dataset_json
         self.trainer_name = trainer_name
@@ -543,7 +554,30 @@ class nnUNetPredictor(object):
 
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
+        ## July 27
+        ## 3) another way?
+        def apply_dropout_hook(model, p=0.3, layer_filter=lambda name, module: 'decoder' in name): # p=0.5
+            hooks = []
+            def make_hook(p):
+                def hook(module, input, output):
+                    return F.dropout2d(output, p=p, training=True)
+                return hook
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Conv2d) and layer_filter(name, module): # conv2d in decoder
+                    h = module.register_forward_hook(make_hook(p))
+                    hooks.append(h)
+
+            return hooks
+        hooks = apply_dropout_hook(self.network, p=0.5)
+
+        # import pdb;pdb.set_trace()
+        # prediction_1 = self.network(x);prediction_2 = self.network(x)
+        # print(prediction_1 - prediction_2).abs().mean().item()) ## -> verify!!!
+
         prediction = self.network(x)
+
+        for h in hooks: h.remove() ## remove hook
+
         # print(self.temperature, '!!!') # JJ
         if self.temperature is not None:
             prediction = prediction / self.temperature  # TS
@@ -622,7 +656,40 @@ class nnUNetPredictor(object):
         with torch.no_grad():
             assert isinstance(input_image, torch.Tensor)
             self.network = self.network.to(self.device)
-            self.network.eval()
+            ## ----------------------------
+            ## 1) seems dropout not activated!!!!!
+            # for name, module in self.network.named_modules():
+            #     # if isinstance(module, nn.Conv2d) and "decoder" in name.lower() and module.kernel_size == (3, 3):
+            #     if isinstance(module, nn.Conv2d) and module.kernel_size == (3, 3):
+            #         module.add_module("dropout", nn.Dropout2d(p=0.5)) # 0.2
+            #
+            # self.network.eval()
+            # for module in self.network.modules():
+            #     if isinstance(module, nn.modules.dropout._DropoutNd):
+            #         module.train()
+            # print(self.network)
+            # import pdb;pdb.set_trace()
+            ## ----------------------------
+            ## 2) another way?
+            # def replace_conv_with_dropout(model, dropout_p=0.5):
+            #     for name, module in model.named_children():
+            #         if isinstance(module, nn.Conv2d) and module.kernel_size == (3, 3):
+            #             setattr(model, name, ConvDropoutBlock(module, dropout_p))
+            #         else:
+            #             replace_conv_with_dropout(module, dropout_p)  # 递归替换
+            #
+            # def enable_dropout(model):
+            #     for m in model.modules():
+            #         if isinstance(m, nn.Dropout) or isinstance(m, nn.Dropout2d) or isinstance(m, nn.Dropout3d):
+            #             m.train()
+            # replace_conv_with_dropout(self.network, dropout_p=0.5)
+            # self.network.eval()
+            # enable_dropout(self.network)
+
+
+            # print(self.network)
+            # import pdb;pdb.set_trace()
+            ## ----------------------------
 
             empty_cache(self.device)
 
