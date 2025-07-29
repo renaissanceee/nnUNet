@@ -164,8 +164,8 @@ if __name__ == "__main__":
     parser.add_argument('--TS', required=False, default=None, type=str, help='temperature scaling')
     args = parser.parse_args()
 
-    # root = f"/staging/leuven/stg_00081/jli/calibration/nnUNet_nested/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
-    root = f"/scratch/leuven/372/vsc37255/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    root = f"nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    # root = f"/scratch/leuven/372/vsc37255/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
     val_dir = join(root, "validation_ece/ratio_metrics_prob_ntr")
     test_dir = join(root, "test/ratio_metrics_prob_ntr")
     folder_root = join(root, f"test/ratio_metrics_prob_ntr")
