@@ -18,7 +18,7 @@ from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 import torch
 from nnunetv2.evaluation.ece_utils import calc_ece_kde, calc_bs, calc_v_bias, calc_nll, calc_ece_bins, detect_failure, \
-    ece_loss, calc_label_shift
+    ece_loss
 from nnunetv2.evaluation.plot_utils import plot_corr_and_range_dataset, plot_ce_and_range_dataset, plot_bins_dataset, \
     plot_ratio_and_range_dataset, plot_ratio_and_range_all
 from sklearn.metrics import accuracy_score, log_loss
@@ -119,12 +119,13 @@ def generate_confidence_bounds(r, ce_left, ce_right, sigma_r):
     return (x_ce, y_ce), (x_1std, y_1std), (x_2std, y_2std), (x_3std, y_3std)
 
 
-def update_r_keys_zero(results):
+def update_r_keys_zero(results, r_est, r_gt):
     """Zero out all r-related estimates when CE info is not available."""
     for key in ['r_naive', 'r_first_corr', 'r_second_corr']:
         results['ratio'][key] = {
-            'r_est': 0,
-            'r_bias': 0,
+            'r_est': r_est,
+            # 'r_bias': r_est - r_gt,
+            'AE_r': abs(r_est - r_gt),
             'bound__ce': np.array([0, 0]),
             'bound__ce+1std': np.array([0, 0]),
             'bound__ce+2std': np.array([0, 0]),
@@ -140,7 +141,8 @@ def update_r_keys(results, key, r_est, r_gt, *bounds):
     (x_ce, y_ce, x_1std, y_1std, x_2std, y_2std, x_3std, y_3std) = bounds
     results['ratio'][key] = {
         'r_est': r_est,
-        'r_bias': r_est - r_gt,
+        # 'r_bias': r_est - r_gt,
+        'AE_r': abs(r_est - r_gt),
         'bound__ce': np.array([x_ce, y_ce]),
         'bound__ce+1std': np.array([x_1std, y_1std]),
         'bound__ce+2std': np.array([x_2std, y_2std]),
@@ -161,15 +163,25 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
                       ce_type: str = "bins",
                       epsilon_y_mean_ece: float = None,
                       epsilon_x_mean_ece: float = None,
+                      swin: bool = False,
                       ) -> dict:
     # load images
     seg_ref, seg_ref_dict = image_reader_writer.read_seg(reference_file)  # (1,155,240,240) within {0.0,1.0,2.0,3.0}
     seg_pred, seg_pred_dict = image_reader_writer.read_seg(prediction_file)
-    prob_pred = np.load(probability_file)['probabilities']  # (3,155,240,240) within [0,1]
+    prob_pred = np.load(probability_file)['probabilities']  # (4,155,240,240) within [0,1]
     ignore_mask = seg_ref == ignore_label if ignore_label is not None else None
+    # print(seg_ref.shape, seg_pred.shape)
+    # print(prob_pred.shape)
+    # cc=np.sum(prob_pred,axis=0)
+    # np.max(cc),np.min(cc)
+    # import pdb;pdb.set_trace()
 
-    print(f"calculate r for {os.path.basename(reference_file)}")
-    interested_region = (2,) if biomarker == 'ntr' else (2, 3)
+    # print(f"calculate r for {os.path.basename(reference_file)}")# JJ:0814
+    
+    if swin:
+        interested_region = (1,) if biomarker == 'ntr' else (1, 3)  # JJ: for swin_unetr
+    else:
+        interested_region = (2,) if biomarker == 'ntr' else (2, 3)
 
     "analyze mean/var"
     # gt
@@ -185,6 +197,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
         nec_prob_map = nec_prob_map.squeeze(0).astype(float)
 
     else:
+        # prob_pred: (4,240,240,155)
         wt_prob_map, wt_prob_counter = region_or_label_to_mask_prob_add(prob_pred, (1, 2, 3))  # denominator
         nec_prob_map, nec_prob_counter = region_or_label_to_mask_prob_add(prob_pred, interested_region)  # numerator
 
@@ -240,7 +253,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
     results['ratio'][f'epsilon_ece_{ce_type}']['epsilon_x'] = epsilon_x
 
     # if epsilon_y_mean_ece is not None and ce_type!='bs' and ce_type!='kde2':
-    if epsilon_y_mean_ece is not None or ce_type == 'label_shift':
+    if epsilon_y_mean_ece is not None:
         bounds_naive = generate_confidence_bounds(r_naive, ce_left, ce_right, sigma_r)
         bounds_1corr = generate_confidence_bounds(r_1_ord_corr, ce_left, ce_right, sigma_r)
         bounds_2corr = generate_confidence_bounds(r_2_ord_corr, ce_left, ce_right, sigma_r)
@@ -250,7 +263,7 @@ def compute_estimator(reference_file: str, prediction_file: str, probability_fil
         update_r_keys(results, 'r_second_corr', r_2_ord_corr, r_gt, *sum(bounds_2corr, ()))
 
     else:
-        update_r_keys_zero(results)
+        update_r_keys_zero(results, r_naive, r_gt)
     return results
 
 
@@ -265,6 +278,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
                                 biomarker: str = 'ntr',
                                 ce_type: str = "bins",  # "kde", nll, bs
                                 ece_percentage: int = None,
+                                swin: bool = False,
                                 ) -> dict:
     """
     output_file must end with .json; can be None
@@ -277,7 +291,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
 
     os.makedirs(folder_save, exist_ok=True)
     # if 'test' in folder_pred and ce_type!='bs' and ce_type!='kde2':
-    if 'test' in folder_pred and ce_type != 'bs' and ce_type != 'label_shift' and ce_type != 'label_shift_ece':
+    if 'test' in folder_pred and ce_type != 'bs':
         path_ece_json = join(folder_save.replace('test', 'validation_ece'), f"{ce_type}_{output_file}")
         if 'binary' in path_ece_json:
             path_ece_json = path_ece_json.replace('binary', 'prob')  # ECE_interval still from prob
@@ -294,7 +308,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     i = 0
     for ref, pred, prob in zip(files_ref, files_pred, files_prob):
         result = compute_estimator(ref, pred, prob, image_reader_writer, regions_or_labels, ignore_label,
-                                   binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece)
+                                   binary, biomarker, ce_type, epsilon_y_mean_ece, epsilon_x_mean_ece, swin)
         # i += 1
         # if i > 10: break
         results.append(result)
@@ -307,7 +321,8 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
     paired_samples['reference_file'] = np.array([item['reference_file'] for item in results])  # [N,]
     ## Range: as narrow as possible ##
     mean_r_range = {}
-    mean_r_bias = {}
+    # mean_r_bias = {}
+    MAE = {}
     scores = ['r_naive', 'r_first_corr', 'r_second_corr']
     for r in scores:
         paired_samples[r]['bound__ce'] = np.array([item['ratio'][r]['bound__ce'] for item in results])  # [N,2]
@@ -318,13 +333,15 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         paired_samples[r]['range__ce+1std'] = np.array([item['ratio'][r]['range__ce+1std'] for item in results])  # [N,]
         paired_samples[r]['range__ce+2std'] = np.array([item['ratio'][r]['range__ce+2std'] for item in results])
         paired_samples[r]['range__ce+3std'] = np.array([item['ratio'][r]['range__ce+3std'] for item in results])
-        paired_samples[r]['bias_r'] = np.array([item['ratio'][r]['r_bias'] for item in results])
+        # paired_samples[r]['bias_r'] = np.array([item['ratio'][r]['r_bias'] for item in results])
+        paired_samples[r]['AE_r'] = np.array([item['ratio'][r]['AE_r'] for item in results])
         # paired_samples[r]['sigma_r'] = results['ratio']['r_gt']['sigma_r']
         paired_samples[r]['r_est'] = np.array([item['ratio'][r]['r_est'] for item in results])  # [N,]
         r_range_123 = np.stack((paired_samples[r]['range__ce+1std'], paired_samples[r]['range__ce+2std'],
                                 paired_samples[r]['range__ce+3std']), axis=1)
         mean_r_range[r] = np.mean(r_range_123, axis=0)
-        mean_r_bias[r] = np.mean(paired_samples[r]['bias_r'])
+        # mean_r_bias[r] = np.mean(paired_samples[r]['bias_r'])
+        MAE[r] = np.mean(paired_samples[r]['AE_r'])
     # cali-error for y and x
     mean_epsilon = {}
     paired_samples[f'epsilon_ece_{ce_type}']['epsilon_y'] = np.array(
@@ -338,7 +355,7 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         mean_epsilon['epsilon_y'] = np.percentile(paired_samples[f'epsilon_ece_{ce_type}']['epsilon_y'], ece_percentage)
         mean_epsilon['epsilon_x'] = np.percentile(paired_samples[f'epsilon_ece_{ce_type}']['epsilon_x'], ece_percentage)
 
-    if epsilon_y_mean_ece is not None or ce_type == 'label_shift':
+    if epsilon_y_mean_ece is not None:
         # bias for y and x
         mean_v_bias = {}
         paired_samples['v_bias']['v_bias_y_L1'] = np.array([item['ratio']['v_bias']['v_bias_y_L1'] for item in results])
@@ -351,16 +368,20 @@ def compute_estimator_on_folder(folder_ref: str, folder_pred: str, output_file: 
         failure['std'] = failure_1std.tolist()
         # sort for json
         [recursive_fix_for_json_export(i) for i in results]
-        head_results = [mean_r_range, mean_r_bias, mean_epsilon, mean_v_bias, failure]
+        head_results = [mean_r_range, MAE, mean_epsilon, mean_v_bias, failure]
         [recursive_fix_for_json_export(i) for i in head_results]
 
         result = {f'mean_ece_{ce_type}': mean_epsilon, 'mean_v_bias': mean_v_bias,
-                  'mean_r_bias': mean_r_bias,
+                  'MAE': MAE,
                   'mean_r_range__ce+123std': mean_r_range,
                   'failure': failure,
                   'ratio_per_case': results,
                   }
-
+        print('write json into: ', folder_save)
+        print('-----------------------------')
+        print('range: ',mean_r_range['r_naive'])
+        print('-----------------------------')
+        print("failure:", len(failure['std']))
         ## ratio.json
         save_json(result, join(folder_save, f"{ce_type}_{output_file}"), sort_keys=False)
         # plot.json
@@ -404,6 +425,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
                                biomarker: str = 'ntr',
                                ce_type: str = "bins",  # "kde", nll, bs
                                ece_percentage: int = None,
+                               swin: bool = False,
                                ):
     dataset_json = load_json(dataset_json_file)
     file_ending = dataset_json['file_ending']  # .nii.gz for segs
@@ -414,9 +436,6 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
     rw = determine_reader_writer_from_dataset_json(dataset_json, example_file)()
 
     # maybe auto set output file
-    if output_file is None and ece_percentage is None:
-        output_file = 'ratio.json'  # JJ
-        # output_file = 'ratio_5_volumes_add_weight.json' # JJ_for_lascal
     if output_file is None and ece_percentage is not None:
         output_file = f'ratio_tile{ece_percentage}.json'
 
@@ -424,7 +443,7 @@ def compute_metrics_on_folder2(folder_ref: str, folder_pred: str, dataset_json_f
     compute_estimator_on_folder(folder_ref, folder_pred, output_file, rw, file_ending,
                                 lm.foreground_regions if lm.has_regions else lm.foreground_labels, lm.ignore_label,
                                 num_processes, chill=chill, binary=binary, biomarker=biomarker, ce_type=ce_type,
-                                ece_percentage=ece_percentage)
+                                ece_percentage=ece_percentage, swin=swin)
 
 
 def evaluate_folder_entry_point():
@@ -436,7 +455,7 @@ def evaluate_folder_entry_point():
                         help='dataset.json file')
     parser.add_argument('-pfile', type=str, required=False,
                         help='plans.json file')
-    parser.add_argument('-o', type=str, required=False, default=None,
+    parser.add_argument('-o', type=str, required=False, default='ratio.json',
                         help='Output file. Optional. Default: pred_folder/summary.json')
     parser.add_argument('-np', type=int, required=False, default=default_num_processes,
                         help=f'number of processes used. Optional. Default: {default_num_processes}')
@@ -446,9 +465,10 @@ def evaluate_folder_entry_point():
     parser.add_argument('--TS', type=str, required=False, default=None, help='Temperature Scaling')
     parser.add_argument('--other_cal', type=str, required=False, default=None, help='IR, Direchlet')
     parser.add_argument('--ce_type', required=True, type=str, help='bins15, kde1, nll, bs')
-    parser.add_argument('--biomarker', required=True, type=str, help='ntr, ctr')
+    parser.add_argument('--biomarker', required=False, type=str, default="ntr", help='ntr, ctr')
     parser.add_argument('--ece_percentage', required=False, default=None, type=int,
                         help='e.g. 95 percentile of ECE_val')
+    parser.add_argument('--swin', action='store_true', help='swin_unetr')
     args = parser.parse_args()
     if args.pfile is None:
         args.pfile = Path(args.pred_folder.rstrip("/")).parents[1] / "plans.json"
@@ -463,7 +483,7 @@ def evaluate_folder_entry_point():
     print(f'calculating from ... {args.pred_folder}')
     compute_metrics_on_folder2(args.gt_folder, args.pred_folder, args.djfile, args.pfile, args.o, args.np,
                                chill=args.chill, binary=args.binary, biomarker=args.biomarker, ce_type=args.ce_type,
-                               ece_percentage=args.ece_percentage)
+                               ece_percentage=args.ece_percentage, swin=args.swin)
 
 
 if __name__ == '__main__':

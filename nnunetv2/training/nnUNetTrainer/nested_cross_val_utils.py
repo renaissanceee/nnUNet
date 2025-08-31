@@ -34,16 +34,8 @@ def copy_brats_from_Tr_to_Ts_or_Val(val_keys, set_train_folder_img, set_train_fo
         dst_label = join(set_test_folder_label, f"{case_id}.nii.gz")
         shutil.copy(src_label, dst_label)
 
-# def split_nested_keys(tr_keys, val_ratio=0.2, seed=12345):
-#     random.seed(seed)
-#     keys = tr_keys.copy()
-#     random.shuffle(keys)
-#     val_size = int(len(keys) * val_ratio)
-#     val_keys = keys[:val_size]
-#     new_tr_keys = keys[val_size:]
-#     return new_tr_keys, val_keys
 
-def split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345):
+def split_nested_keys_TS(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345):
     random.seed(seed)
     keys = tr_keys.copy()
     random.shuffle(keys)
@@ -54,3 +46,11 @@ def split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345):
     val_TS_keys, val_ece_keys = val_keys[:val_TS_size],val_keys[val_TS_size:]
     new_tr_keys = keys[val_size:]
     return new_tr_keys, val_TS_keys, val_ece_keys
+
+def split_nested_keys(tr_keys, val_ratio=0.1, seed=12345):
+    random.seed(seed)
+    keys = tr_keys.copy()
+    random.shuffle(keys)
+    val_size = int(len(keys) * val_ratio)  # 0.1
+    new_tr_keys, val_keys = keys[val_size:], keys[:val_size]
+    return new_tr_keys, val_keys

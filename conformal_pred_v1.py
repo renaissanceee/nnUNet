@@ -11,6 +11,16 @@ from matplotlib.patches import Rectangle
 import numpy as np
 from scipy import optimize
 from scipy.special import rel_entr
+from nnunetv2.evaluation.plot_utils import plot_histogram_range
+
+def s_m_l(array):
+    s_threshold, m_threshold = np.quantile(array, 0.33), np.quantile(array, 0.66)
+    # print("S/M/L:", s_threshold, m_threshold, "...")
+    s_mask = array <= s_threshold
+    m_mask = (array > s_threshold) & (array <= m_threshold)
+    l_mask = array > m_threshold
+    return s_mask, m_mask, l_mask
+
 
 def logit(x):
     eps = 1e-6
@@ -103,17 +113,14 @@ def binary_kl(p, q):
     q = np.clip(q, 1e-10, 1 - 1e-10)
     return rel_entr(p, q) + rel_entr(1 - p, 1 - q)
 
-# 一阶导数
 def gradient_q_binary_kl(p, q):
     q = np.clip(q, 1e-10, 1 - 1e-10)
     return np.log(q) - np.log(1 - q) - np.log(p) + np.log(1 - p)
 
-# 二阶导数（修正了你之前写错的表达式）
 def gradient_q_2_binary_kl(p, q):
     q = np.clip(q, 1e-10, 1 - 1e-10)
     return 1 / q + 1 / (1 - q)
 
-# 主函数：输入多个 pred_ratio，输出 [N, 2] 的 interval 数组
 def conformal_interval_kl_div(pred_ratios, quantile_value):
     intervals = []
 
@@ -155,45 +162,87 @@ def conformal_interval_kl_div(pred_ratios, quantile_value):
 
     return np.array(intervals)
 
+def cover_rate(failure, n):
+    return round((1 - len(failure) / n) * 100, 3)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--loss", type=str, required=True, help="CELoss")
-    parser.add_argument("--fold", type=str, required=True, help="0")
+    parser.add_argument("--loss", type=str, required=False,default='CELoss')
+    parser.add_argument("--fold", type=str, required=False,default='0')
     parser.add_argument('--biomarker', required=False, default='ntr', type=str, help='ntr, ctr')
     parser.add_argument('--CP', required=False, default=80, type=int, help='80, 90')
     parser.add_argument('--TS', required=False, default=None, type=str, help='temperature scaling')
+    parser.add_argument('--dataset', required=False, default='brats21', type=str, help='dataset')
     args = parser.parse_args()
 
-    root = f"nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    # root = f"nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
     # root = f"/scratch/leuven/372/vsc37255/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
-    val_dir = join(root, "validation_ece/ratio_metrics_prob_ntr")
-    test_dir = join(root, "test/ratio_metrics_prob_ntr")
-    folder_root = join(root, f"test/ratio_metrics_prob_ntr")
-    if args.TS is not None:
-        val_dir = val_dir.replace('validation_ece',f'validation_ece_TS_{args.TS}')
-        test_dir = test_dir.replace('test',f'test_TS_{args.TS}')
-        folder_root =folder_root.replace('test',f'test_TS_{args.TS}')
-    folder_save = join(folder_root, f"conformal_{args.CP}")  # 'conformal_{args.CP}_kl'
-    os.makedirs(folder_save, exist_ok=True)
+
+    if "kit" in args.dataset: ## nnU+KiTS23
+        root = f"nnUNet_results/kits23/Dataset220_KiTS2023/nnUNetTrainer{args.loss}__nnUNetPlans__2d/fold_{args.fold}"
+    elif "2d_msd" in args.dataset: ## nnU+msd
+        root = f"nnUNet_results/msd/Dataset201_tumor/nnUNetTrainer__nnUNetPlans__2d/fold_{args.fold}"
+    elif "3d_msd" in args.dataset: ## nnU+msd
+        root = f"nnUNet_results/msd/Dataset201_tumor/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_{args.fold}"
+    elif "2d_brats" in args.dataset:
+        root = f"nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_{args.fold}"
+    elif "3d_brats" in args.dataset:
+        root = f"nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerDiceLoss__nnUNetPlans__3d_fullres/fold_{args.fold}"
+    ## Other architectures
+    elif "swin" in args.dataset: ## "SwinUNETR+Brats21"
+        root = f"/leonardo_work/EUHPC_B26_036/jli/cali/monai_research/SwinUNETR/BRATS21/benchmark_brats21_nested_Dice/fold_{args.fold}"
+    elif "nnf" in args.dataset: ## msd
+        root = f"/leonardo_work/EUHPC_B26_036/jli/cali/nnFormer/benchmark_MSD/nnFormer/2d/Task003_tumor/nnFormerTrainerV2_nnformer_tumor__nnFormerPlansv2.1/fold_{args.fold}"
+    elif "plus" in args.dataset: ## msd
+        root = f"/leonardo_work/EUHPC_B26_036/jli/cali/unetr_plus_plus/benchmark_MSD/unetr_pp/2d/Task003_tumor/unetr_pp_trainer_tumor__unetr_pp_Plansv2.1/fold_{args.fold}"
+
+    # val_dir = join(root, "validation_ece/ratio_metrics_prob_ntr")
+    # test_dir = join(root, "test/ratio_metrics_prob_ntr")
+
+    val_dir = join(root, "validation_ece/ratio_metrics_prob_ctr")
+    test_dir = join(root, "test/ratio_metrics_prob_ctr")
+
+    # if args.TS is not None:
+    #     val_dir = val_dir.replace('validation_ece',f'validation_ece_{args.TS}T')
+    #     test_dir = test_dir.replace('test',f'test_{args.TS}T')
+
     print('loading files ...')
     # test: r_gt, r_est
-    test_json_path = join(test_dir, "plot/plot_bins15_ratio.json")
+    test_json_path = join(test_dir, f"bins15_ratio_min_width_0.68.json")
+    # test_json_path = join(test_dir, f"v_bias_ratio_min_width_0.68.json")
+    # test_json_path = join(test_dir, f"bins15_ratio.json")
     test_json = load_json(test_json_path)
-    test_r_est = test_json["r_naive"]["r_est"]
-    test_r_gt = test_json["r_gt"]["r_gt"]
+    test_r_est = np.array([per_case["ratio"]["r_naive"]["r_est"] for per_case in test_json["ratio_per_case"]])
+    test_r_gt = np.array([per_case["ratio"]["r_gt"]["r_gt"] for per_case in test_json["ratio_per_case"]])
+
     name_list = subfiles(join(root, 'test'), suffix='.npz', join=False)
-    case_ids = [os.path.basename(name).split('_')[-1].split('.')[0] for name in name_list]
+    case_ids = np.asarray([os.path.basename(name).split('_')[-1].split('.')[0] for name in name_list])
     # val: r_gt, r_est
-    val_json_path = join(val_dir, "bins15_ratio.json")
+    # val_json_path = join(val_dir, f"bins15_ratio_tile{args.CP}.json")
+    val_json_path = join(val_dir, f"bins15_ratio.json")
     val_json = load_json(val_json_path)
     val_r_est = np.array([per_case["ratio"]["r_naive"]["r_est"] for per_case in val_json["ratio_per_case"]])
     val_r_gt = np.array([per_case["ratio"]["r_gt"]["r_gt"] for per_case in val_json["ratio_per_case"]])
 
+    ## tumor_size_mask
+    test_wt_size = np.array([per_case["wt_size"] for per_case in test_json["ratio_per_case"]])
+    test_ece_x = np.array([per_case["ratio"]["epsilon_ece_bins15"]["epsilon_x"] for per_case in test_json["ratio_per_case"]])
+    n_sample = len(test_wt_size)
+
+    s_mask, m_mask, l_mask = s_m_l(test_wt_size)
+    # s_mask, m_mask, l_mask = s_m_l(paired_samples["ece_x"])
+
+
     "conformal_pred_v1"
-    print('calc linear residual ...')
+    # print('calc linear residual ...')
     residuals = np.abs(val_r_est - val_r_gt)
-    q = np.quantile(residuals, args.CP/100)  # 90% conf_interval
+    q = np.quantile(residuals, args.CP/100)  # 90% conf_interval  
     lower, upper = np.clip(test_r_est - q, 0.0, 1.0), np.clip(test_r_est + q, 0.0, 1.0) # clamp for [0,1]
+    # residuals.sort()
+    # print(residuals)
+    # asd
+    # print(np.mean(residuals)) # 0.03 (swin), 0.07(nnf)
+    # print(q) # 0.02 (swin), 0.07 (nnf)
     
     "conformal_pred_v2"  # log-mapping+sigmoid-->but wide
     # residuals = np.abs(logit(val_r_est) - logit(val_r_gt))
@@ -207,17 +256,42 @@ if __name__ == "__main__":
     # lower, upper = interval[:,0],interval[:,1]
 
     "save_json"
-    failure = detect_failure(lower,upper,test_r_gt,case_ids)  # fail_case: outside the range
-    mean_r_range = np.mean(upper-lower)
+    # failure
+    lower_s, upper_s, lower_m, upper_m,lower_l, upper_l = lower[s_mask], upper[s_mask],lower[m_mask], upper[m_mask],lower[l_mask], upper[l_mask]
+    test_r_gt_s, test_r_gt_m, test_r_gt_l = test_r_gt[s_mask],test_r_gt[m_mask], test_r_gt[l_mask]
+    case_ids_s, case_ids_m, case_ids_l = case_ids[s_mask], case_ids[m_mask], case_ids[l_mask]
+    failure = detect_failure(lower,upper,test_r_gt,case_ids)
+    failure_s = detect_failure(lower_s, upper_s, test_r_gt_s, case_ids_s)
+    failure_m = detect_failure(lower_m, upper_m, test_r_gt_m, case_ids_m)
+    failure_l = detect_failure(lower_l, upper_l, test_r_gt_l, case_ids_l)
+
+    # range
+    r_range = upper-lower
+    r_range_s, r_range_m, r_range_l = r_range[s_mask],r_range[m_mask],r_range[l_mask]
+    mean_r_range_s, mean_r_range_m, mean_r_range_l = np.mean(r_range_s), np.mean(r_range_m), np.mean(r_range_l)
+    print("Range S/M/L", round(mean_r_range_s,3), round(mean_r_range_m,3), round(mean_r_range_l,3))
+
+
+    mean_r_range = np.mean(r_range)
     result = {'failure': failure, 'mean_r_range': mean_r_range,'interval_per_case':np.stack((lower, upper), axis=1).tolist()}
-    save_json(result, join(folder_root, f"CP{args.CP}_ratio.json"), sort_keys=False) ## CP80_ratio.json
-    print('Fail, Range:', len(failure), mean_r_range)
-    if args.fold == '0':
-        step_size = 10
-        for start in range(0, len(test_r_est), step_size): #
-            end = start + step_size
-            intervals = list(zip(lower[start:end], upper[start:end]))
-            plot_conformal(test_r_est[start:end], test_r_gt[start:end], intervals, case_ids[start:end], save_path=join(folder_save, f"conformal_interval_{end}.png"))
+    save_json(result, join(test_dir, f"CP{args.CP}_ratio.json"), sort_keys=False) ## CP80_ratio.json
+    # print('Fail, Range:', len(failure), mean_r_range)
+    print('Cover:', round((1-len(failure)/n_sample)*100,3))
+    print('Cover S/M/L:', cover_rate(failure_s, len(lower_s)), cover_rate(failure_m, len(lower_m)), cover_rate(failure_l, len(lower_l)))
+
+    # if args.fold == '0':
+    #     step_size = 10
+    #     folder_save = join(test_dir, f"conformal_{args.CP}_step{step_size}")  # 'conformal_{args.CP}_kl'
+    #     folder_save_hist = join(test_dir, f"hist")
+    #     os.makedirs(folder_save, exist_ok=True)
+    #     os.makedirs(folder_save_hist, exist_ok=True)
+    #     plot_histogram_range(r_range, title=f'Overall Confidence Interval (±sigma)',  # Interval
+    #                          xlabel=f'Interval Widthth', save_path=join(folder_save_hist,f"conformal_{args.CP}.png"), color='#ba68c8')
+    #
+    #     for start in range(0, len(test_r_est), step_size):
+    #         end = start + step_size
+    #         intervals = list(zip(lower[start:end], upper[start:end]))
+    #         plot_conformal(test_r_est[start:end], test_r_gt[start:end], intervals, case_ids[start:end], save_path=join(folder_save, f"conformal_interval_{end}.png"))
 
 
 

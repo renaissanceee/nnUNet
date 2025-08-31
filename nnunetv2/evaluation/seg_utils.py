@@ -75,6 +75,9 @@ def jaccard_segment(x1, y1, x2, y2):
 def get_ce_bound(y_bar, x_bar, epsilon_y, epsilon_x):
     ce_left = y_bar / x_bar - max(y_bar - epsilon_y, 1e-7) / (x_bar + epsilon_x)  # extreme-case: move to 0
     ce_right = (y_bar + epsilon_y) / max(x_bar - epsilon_x, 1e-7) - y_bar / x_bar  # move to 1
+
+    # if ce_right + ce_left < 0:
+    #     import pdb;pdb.set_trace()
     return ce_left, ce_right
 
 

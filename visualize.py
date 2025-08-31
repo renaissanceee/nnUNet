@@ -35,23 +35,15 @@ def visualize_prob_middle_slice(file, suffix, save_path):
     plt.imsave(save_path + f"_{slice_idx}_nec.png", nec_uncertainty, cmap="jet")
     plt.imsave(save_path + f"_{slice_idx}_wt.png", wt_uncertainty, cmap="jet")
 
-def visualize_input_middle_slice(file, suffix, save_path):
-    slice_idx = 155 // 3  # middle z-axis
-    # img = nib.load(file + suffix);data = img.get_fdata()  # shape: (H, W, D) or (C, H, W, D)
-    # slice_data = data[:, :, slice_idx]
-    # plt.imsave(save_path + f"_{slice_idx}.png", slice_data, cmap='gray')
-    #
-    # slice_idx = 155 // 3 *2  # middle z-axis
-    # slice_data = data[:, :, slice_idx]
-    # plt.imsave(save_path + f"_{slice_idx}.png", slice_data, cmap='gray')
-
+def visualize_input_middle_slice(input_root, file_name, suffix, save_path, slice_idx):
+    file = os.path.join(input_root, f'{file_name}_0000')
     # 加载第一张图
     img1 = nib.load(file + suffix)
     data1 = img1.get_fdata()  # shape: (H, W, D) or (C, H, W, D)
     slice_data1 = data1[:, :, slice_idx]
     # 加载第二张图
     img2 = nib.load(
-        'nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test/BraTS2021_00391.nii.gz')
+        f'nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerDiceLoss__nnUNetPlans__3d_fullres/fold_0/test/{file_name}{suffix}')
     data2 = img2.get_fdata()
     slice_data2 = data2[:, :, slice_idx]
 
@@ -72,37 +64,15 @@ def visualize_input_middle_slice(file, suffix, save_path):
     plt.savefig(save_path + f"_{slice_idx}_overlay.png", bbox_inches='tight', pad_inches=0, dpi=300)
     plt.close()
 
-
-# file_name = "BraTS2021_00000"
-# file_name = "BraTS2021_00009"
-# file_name = "BraTS2021_00016"
-# file_name = "BraTS2021_00024"
-# file_name = "BraTS2021_00028"
-# file_name = "BraTS2021_00031"
-# file_name = "BraTS2021_00035"
-# file_name = "BraTS2021_00045"
-## pred_seg ##
-# seg_pred_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/validation/"
-# seg_save_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/val_seg/"
-# os.makedirs(seg_save_root, exist_ok=True)
-# visualize_middle_slice(os.path.join(seg_pred_root,file_name), ".nii.gz", os.path.join(seg_save_root,file_name))
-## gt_seg ##
-# gt_file_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test"
-# gt_save_root = "./vis_gt"
-# os.makedirs(gt_save_root, exist_ok=True)
-# visualize_middle_slice(os.path.join(gt_file_root,file_name), ".nii.gz", os.path.join(gt_save_root,file_name))
-# ## pred_prob ##
-# prob_pred_root = "./nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainerCELoss__nnUNetPlans__2d/fold_0/test"
-# prob_save_root = "./vis_prob"
-# os.makedirs(prob_save_root, exist_ok=True)
-# visualize_prob_middle_slice(os.path.join(prob_pred_root,file_name), ".npz", os.path.join(prob_save_root,file_name))
 # input
-input_root = "/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_raw_nested/Dataset137_BraTS2021/imagesTs/fold_0/"
+input_root = "/leonardo_scratch/fast/EUHPC_B26_036/dataset/nnUNet_raw_nested/Dataset137_BraTS2021/imagesTs/fold_0/"
 input_save_root = "./vis_input"
 os.makedirs(input_save_root, exist_ok=True)
-file_name = "BraTS2021_00391"
-file_name = f'{file_name}_0000'
-visualize_input_middle_slice(os.path.join(input_root,file_name), ".nii.gz", os.path.join(input_save_root,file_name))
-# file_name = "BraTS2021_00031"
-# file_name = f'{file_name}_0000'
-# visualize_input_middle_slice(os.path.join(input_root,file_name), ".nii.gz", os.path.join(input_save_root,file_name))
+
+# slice_idx = 155 // 3 *2 # middle z-axis
+file_name = "BraTS2021_00009"
+slice_idx = 77
+visualize_input_middle_slice(input_root,file_name, ".nii.gz", os.path.join(input_save_root,file_name),slice_idx)
+file_name = "BraTS2021_00031"
+slice_idx = 51
+visualize_input_middle_slice(input_root,file_name, ".nii.gz", os.path.join(input_save_root,file_name),slice_idx)

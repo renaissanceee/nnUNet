@@ -129,4 +129,4 @@ def entry_point():
 
 
 if __name__ == '__main__':
-    convert_msd_dataset('/home/fabian/Downloads/Task05_Prostate', overwrite_target_id=201)
+    convert_msd_dataset('/leonardo_work/EUHPC_B26_036/jli/cali/dataset/MSD/nnFormer_raw/nnFormer_raw_data/Task03_tumor', overwrite_target_id=201)

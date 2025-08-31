@@ -71,7 +71,7 @@ from nnunetv2.utilities.helpers import empty_cache, dummy_context
 from nnunetv2.utilities.label_handling.label_handling import convert_labelmap_to_one_hot, determine_num_input_channels
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 from nnunetv2.evaluation.ece_kde import get_ece_kde
-from nnunetv2.training.nnUNetTrainer.nested_cross_val_utils import copy_brats_from_Tr_to_Ts_or_Val,split_nested_keys
+from nnunetv2.training.nnUNetTrainer.nested_cross_val_utils import split_nested_keys_TS, split_nested_keys, copy_brats_from_Tr_to_Ts_or_Val
 
 
 class nnUNetTrainer(object):
@@ -118,8 +118,11 @@ class nnUNetTrainer(object):
         self.preprocessed_dataset_folder_base = join(nnUNet_preprocessed, self.plans_manager.dataset_name) \
             if nnUNet_preprocessed is not None else None
         # '/staging/leuven/stg_00081/jli/calibration/dataset/nnUNet_preprocessed/Dataset137_BraTS2021'
+        ## ensemble
+        # self.output_folder_base = join(nnUNet_results, self.plans_manager.dataset_name,
+        #                                self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration)+ "__" +str(random.randint(1, 10000)) \
         self.output_folder_base = join(nnUNet_results, self.plans_manager.dataset_name,
-                                       self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration)+ "__" +str(random.randint(1, 10000)) \
+                                       self.__class__.__name__ + '__' + self.plans_manager.plans_name + "__" + configuration) \
             if nnUNet_results is not None else None
         print(self.output_folder_base)
         # '/staging/leuven/stg_00081/jli/calibration/nnUNet/nnUNet_results/Brats2021/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__2d'
@@ -612,25 +615,29 @@ class nnUNetTrainer(object):
         ###########################
         " imagesTs/labelsTs "
         # Additional, construct ts_keys=val_keys, and save val(.nii.gz) --> Ts
-        set_train_folder_img = join(self.raw_dataset_folder_base, "imagesTr") # images
+        # images
+        set_train_folder_img = join(self.raw_dataset_folder_base, "imagesTr")
         # set_val_folder_img = join(self.raw_dataset_folder_base, "imagesVal", "fold_" + str(self.fold))
         set_val_TS_folder_img = join(self.raw_dataset_folder_base, "imagesVal_TS", "fold_" + str(self.fold))
         set_val_ece_folder_img = join(self.raw_dataset_folder_base, "imagesVal_ece", "fold_" + str(self.fold))
         set_test_folder_img = join(self.raw_dataset_folder_base, "imagesTs", "fold_" + str(self.fold))
-        set_train_folder_label = join(self.raw_dataset_folder_base, "labelsTr") # labels
+        # labels
+        set_train_folder_label = join(self.raw_dataset_folder_base, "labelsTr")
         # set_val_folder_label = join(self.raw_dataset_folder_base, "labelsVal", "fold_" + str(self.fold))
         set_val_TS_folder_label = join(self.raw_dataset_folder_base, "labelsVal_TS", "fold_" + str(self.fold))
         set_val_ece_folder_label = join(self.raw_dataset_folder_base, "labelsVal_ece", "fold_" + str(self.fold))
         set_test_folder_label = join(self.raw_dataset_folder_base, "labelsTs", "fold_" + str(self.fold))
         self.print_to_log_file("Copy 1 fold into Ts ...")
-        # val_keys (used for test-set)
-        if not os.path.exists(set_test_folder_img):
-            copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
-                             set_test_folder_img, set_test_folder_label, modalities=4)
-        ###########################
-        if self.TS or self.IR: # resplit tr_keys=tr_keys(80%)+val_TS_keys(10%)+val_ece_keys(10%)
+        ###########################################
+        ## brats (--TS)
+        ## resplit tr_keys=tr_keys(80%)+val_TS_keys(~10%)+val_ece_keys(~10%)
+        if 'Dataset137_BraTS2021' in self.raw_dataset_folder_base:
+            # val_keys (used for test-set)
+            if not os.path.exists(set_test_folder_img):
+                copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
+                                 set_test_folder_img, set_test_folder_label, modalities=4)
             " imagesVal/labelsVal "
-            tr_keys, val_TS_keys, val_ece_keys = split_nested_keys(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345)# 10%+10% val, 80% train
+            tr_keys, val_TS_keys, val_ece_keys = split_nested_keys_TS(tr_keys, val_ratio_TS=0.1, val_ratio_ece=0.1, seed=12345)# 10%+10% val, 80% train
             val_keys = val_TS_keys
             self.print_to_log_file(
                 f"Now we change split into train/val_TS/val_ece/test {len(tr_keys), len(val_TS_keys), len(val_ece_keys), len(ts_keys)}")
@@ -639,10 +646,25 @@ class nnUNetTrainer(object):
                                             set_val_TS_folder_img, set_val_TS_folder_label, modalities=4) # copy Val_TS
                 copy_brats_from_Tr_to_Ts_or_Val(val_ece_keys, set_train_folder_img, set_train_folder_label,
                                             set_val_ece_folder_img, set_val_ece_folder_label, modalities=4)# copy Val_ece
-        else:
+
+        ## KiTS23 or MSD (w/o TS)
+        ## resplit tr_keys=tr_keys(90%)val_ece_keys(~10%)
+        else: # no temoerature scaling
+            modalities = 1 if 'Dataset220_KiTS2023' in self.raw_dataset_folder_base else 4
             self.print_to_log_file("no holdout set for post-hoc !!!")
-            val_keys = ts_keys
+            if not os.path.exists(set_test_folder_img):
+                copy_brats_from_Tr_to_Ts_or_Val(ts_keys, set_train_folder_img, set_train_folder_label,
+                                 set_test_folder_img, set_test_folder_label, modalities=modalities)
+            " imagesVal/labelsVal "
+            tr_keys, val_ece_keys = split_nested_keys(tr_keys, val_ratio=0.1, seed=12345)# 10% val within 80% train
+            val_keys = val_ece_keys
+            self.print_to_log_file(
+                f"Now we change split into train/val/test {len(tr_keys), len(val_ece_keys), len(ts_keys)}")
+            copy_brats_from_Tr_to_Ts_or_Val(val_ece_keys, set_train_folder_img, set_train_folder_label,
+                                        set_val_ece_folder_img, set_val_ece_folder_label, modalities=modalities) # copy Val
+            # (352, 39, 98) for kits23
         # asd
+        
         ###########################
 
         # load the datasets for training and validation. Note that we always draw random samples so we really don't

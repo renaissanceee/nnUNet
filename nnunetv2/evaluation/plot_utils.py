@@ -198,10 +198,9 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
         linewidth=8,
         alpha=0.5,
         zorder=2,
-        label=r'$I_{CE}$'
+        label=r'$I_{ECE}$'
     )
 
-    # font_size, name_size = 18, 14
     font_size, name_size = 22, 20
 
     ax.set_xticks(x)
@@ -218,10 +217,10 @@ def plot_ce_and_range(r_est, r_gt, bound_ce, bound, save_path='plot.png', sigma=
         alpha=0.5,
     )
     handles, labels = ax.get_legend_handles_labels()
-    # r_gt → r → I_{CE}
+    # r_gt → r → I_{ECE}
     order = [labels.index(r'$r_{gt}$'), labels.index(r'$r$')]
     ordered_handles = [handles[i] for i in order] + [ice_handle]
-    ordered_labels = [labels[i] for i in order] + [r'$I_{CE}$']
+    ordered_labels = [labels[i] for i in order] + [r'$I_{ECE}$']
     ax.legend(
         ordered_handles,
         ordered_labels,
@@ -293,13 +292,19 @@ def plot_ratio_and_range(r_est, r_gt, bound, save_path, sigma="", name_list=[]):
 
     ax.grid(True, linestyle='--', alpha=0.5)
     ax.set_ylim(0, 1)
-    ax.set_title(f'Miscalibration on 10 Volumes (±{sigma}$\\sigma$)', fontsize=font_size, pad=15)
+    ax.set_title(f'Intervals on 10 Volumes', fontsize=font_size, pad=15)
     # 去掉边框框线
     for spine in ['top', 'right', 'left', 'bottom']:
         ax.spines[spine].set_visible(False)
     # 分别控制 x 和 y 轴的刻度标签字体大小
     ax.tick_params(axis='x', labelsize=int(0.8*name_size))
     ax.tick_params(axis='y', labelsize=name_size)
+
+    # ax.legend(
+    #     fontsize=18,
+    #     loc='upper right',   # 可以改成 'best' 让 matplotlib 自动找位置
+    #     frameon=False        # 去掉图例的边框
+    # )
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -380,18 +385,12 @@ def plot_corr_and_range_dataset(paired_samples, folder_save, sigma="", step_size
                          bound_second[start:end], save_path, sigma, name_list[start:end])
 
 
-def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", ece_percentage=None):
+def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", conf=None):
     # if ce_type=="kde":
     #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}_1e4", f"CE_{sigma}sigma__ce") # 1e4
     # else:
     #     folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}", f"CE_{sigma}sigma__ce")
-    if ece_percentage is not None:
-        ece_percentage = f'_tile_{ece_percentage}'
-    else:
-        ece_percentage = ''
-    folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}", f"CE_{sigma}sigma__ce")
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_1e4", f"CE_{sigma}sigma__ce") # 1e4
+    folder_save = join(folder_save, f"{ce_type}_{conf}_step{step_size}", f"CE_{sigma}sigma__ce")
 
     os.makedirs(folder_save, exist_ok=True)
 
@@ -408,22 +407,8 @@ def plot_ce_and_range_dataset(paired_samples, folder_save, sigma="", step_size=1
                           save_path, sigma, name_list[start:end])
 
 
-def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", ece_percentage=None):
-    if ece_percentage is not None:
-        ece_percentage = f'_tile_{ece_percentage}'
-    else:
-        ece_percentage = ''
-    # folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}",
-    #                    f"CE_{sigma}sigma__ratio")
-
-    # min_width
-    # folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_v_bias", f"CE_{sigma}sigma__ratio") # JJ
-    folder_save = join(folder_save, f"{ce_type}_step{step_size}_min_width{ece_percentage}",
-                       f"CE_{sigma}sigma__ratio")
-
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_plots_step{step_size}{ece_percentage}_1e4", f"CE_{sigma}sigma__ratio") # 1e4
-
+def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_size=10, ce_type="bins", conf=68):
+    folder_save = join(folder_save, f"{ce_type}_{conf}_step{step_size}")
     os.makedirs(folder_save, exist_ok=True)
 
     r_est_naive = paired_samples['r_naive']['r_est']
@@ -437,33 +422,15 @@ def plot_ratio_and_range_dataset(paired_samples, folder_save, sigma="", step_siz
         save_path = join(folder_save, f"r_and_range_{end}.png")
         plot_ratio_and_range(r_est_naive[start:end], r_gt[start:end], bound_naive[start:end], save_path, sigma, name_list[start:end])
 
-def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins', ece_percentage=None):
-    # if ce_type=="kde":
-    #     folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4") # 1e4
-    # else:
-    #     folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
+def plot_bins_dataset(paired_samples, folder_save, sigma="",ce_type='bins'):
 
-    if ece_percentage is not None:
-        ece_percentage = f'_tile_{ece_percentage}'
-    else:
-        ece_percentage = ''
-    # folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range")
-
-    # folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_v_bias") # JJ
-    folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_min_width{ece_percentage}")
-
-    if ce_type=="kde":
-        folder_save = join(folder_save, f"{ce_type}_hist_of_bias_and_range_1e4") # 1e4
+    folder_save = join(folder_save, f"{ce_type}_hist")
 
     os.makedirs(folder_save, exist_ok=True)
 
     sigma_c = 1 if sigma=="" else sigma
     range_ce = paired_samples['r_naive'][f'range__ce+{sigma_c}std']
-    bias = paired_samples['r_naive']['bias_r']
-    save_path_bias = join(folder_save, f"bias_hist_{sigma}sigma.png")
-    plot_histogram_bias(bias, title=f'Overall Ratio Bias (±{sigma}$\\sigma$)',   # Bias
-               xlabel='Ratio Bias', save_path=save_path_bias, color='skyblue')
-    save_path_range = join(folder_save, f"range_hist_{sigma}sigma{ece_percentage}.png")
+    save_path_range = join(folder_save, f"range_hist_{sigma}sigma.png")
 
     ## Apr.23
     range_color = '#ba68c8' # 'darkseagreen' # 'limegreen'

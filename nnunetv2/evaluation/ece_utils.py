@@ -3,7 +3,7 @@ from nnunetv2.evaluation.ece_kde import get_ece_kde
 import torch.nn.functional as F
 import os
 import numpy as np
-from nnunetv2.evaluation.ece_label_shift import get_importance_weights, EceLabelShift, compute_true_w
+# from nnunetv2.evaluation.ece_label_shift import get_importance_weights, EceLabelShift, compute_true_w
 
 
 def fast_ece(y_true, y_pred, bins=10, device='cuda'):
@@ -128,7 +128,7 @@ def calc_bs(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_w
 def calc_v_bias(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
     v_bias_y = l1_score(tensor_nec_prob_map.reshape(-1), tensor_nec_gt_map.reshape(-1).to(torch.int64))
     v_bias_x = l1_score(tensor_wt_prob_map.reshape(-1), tensor_wt_gt_map.reshape(-1).to(torch.int64))
-    return v_bias_y.item(), v_bias_x.item()
+    return abs(v_bias_y.item()), abs(v_bias_x.item())
 
 
 def calc_nll(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, tensor_wt_gt_map):
@@ -150,6 +150,15 @@ def calc_ece_bins(tensor_nec_prob_map, tensor_wt_prob_map, tensor_nec_gt_map, te
     epsilon_x = ece_loss_binary(tensor_wt_prob_map, tensor_wt_gt_map, bins=bins)
     return epsilon_y, epsilon_x
 
+def cover_rate(failure, n):
+    return round((1 - len(failure) / n) * 100, 3)
+
+def detect_failure_size(r_gt, case_ids, bounds):    
+    def out_of_bound(bounds):
+        lower, upper = bounds[:, 0], bounds[:, 1]
+        return (r_gt < lower) | (r_gt > upper)
+
+    return case_ids[out_of_bound(bounds)].tolist()
 
 def detect_failure(paired_samples):
     """Detect failure cases: r_gt falls outside of CE + Nσ bounds."""
@@ -164,7 +173,7 @@ def detect_failure(paired_samples):
         lower, upper = bounds[:, 0], bounds[:, 1]
         return (r_gt < lower) | (r_gt > upper)
 
-    return case_ids[out_of_bound('bound__ce+1std')]
+    return case_ids[out_of_bound('bound__ce+1std')].tolist()
 
 
 def detect_failure_std(paired_samples):
@@ -204,100 +213,3 @@ def complement_tuple(a):
     a_set = set(a)
     b_set = full_set - a_set
     return tuple(sorted(b_set))
-
-
-def arrange_for_binary_weights(preds_source, tensor_seg_prob_map, labels_source_one_hot, interested_region):
-    complement = complement_tuple(interested_region)
-
-    preds_source_nec = torch.stack([
-        preds_source[:, list(interested_region)].sum(dim=1),
-        preds_source[:, list(complement)].sum(dim=1)
-    ], dim=1)
-
-    tensor_seg_prob_map_for_nec = torch.stack([
-        tensor_seg_prob_map[:, list(interested_region)].sum(dim=1),
-        tensor_seg_prob_map[:, list(complement)].sum(dim=1)
-    ], dim=1)
-
-    labels_source_one_hot_nec = torch.stack([
-        labels_source_one_hot[:, list(interested_region)].any(dim=1),
-        labels_source_one_hot[:, list(complement)].any(dim=1)
-    ], dim=1)
-
-    return preds_source_nec, tensor_seg_prob_map_for_nec, labels_source_one_hot_nec
-
-
-def calc_label_shift(tensor_nec_prob_map, tensor_wt_prob_map, tensor_seg_prob_map, source_dict, tensor_seg_gt_map):
-    estimator = EceLabelShift(adaptive_bins=True, n_bins=15, p=1)
-    # source_dict = {'nec_prob_map_source': nec_prob_map_source, 'wt_prob_map_source': wt_prob_map_source,
-    #                'nec_gt_map_source': nec_gt_map_source, 'wt_gt_map_source': wt_gt_map_source,
-    #                'preds_source':preds_source, 'labels_source_one_hot':labels_source_one_hot,
-    #                'interested_region':interested_region}
-
-    ## source
-    nec_prob_map_source, wt_prob_map_source = source_dict['nec_prob_map_source'], source_dict['wt_prob_map_source']
-    nec_gt_map_source, wt_gt_map_source = source_dict['nec_gt_map_source'], source_dict['wt_gt_map_source']
-    interested_region = source_dict['interested_region']
-    labels_source_one_hot = source_dict['labels_source_one_hot']
-    preds_source = source_dict['preds_source']
-    ## weights
-    ## menthod_1: add_up
-    tensor_seg_prob_map = tensor_seg_prob_map.permute(1, 2, 3, 0).reshape(-1, 4)
-    output = get_importance_weights(preds_source.numpy(), labels_source_one_hot.numpy(),
-                                    tensor_seg_prob_map.numpy())  # [N,4]
-    weights = torch.tensor(output["weights"])  ## print("four class weights: ", weights)
-    tensor_seg_gt_map = tensor_seg_gt_map.squeeze(0).reshape(-1)
-    nec_weight, wt_weight = weights[list(interested_region)].sum(dim=0), weights[list((1, 2, 3))].sum(dim=0)
-    true_weight = compute_true_w(np.argmax(labels_source_one_hot.numpy(), axis=1), tensor_seg_gt_map.numpy(), n_class=4)
-    nec_weight_true, wt_weight_true = true_weight[list(interested_region)].sum(dim=0), true_weight[list((1, 2, 3))].sum(
-        dim=0)
-    ## menthod_2: binarize
-    # nec
-    # tensor_seg_prob_map = tensor_seg_prob_map.permute(1, 2, 3, 0).reshape(-1, 4)
-    # preds_source_nec, tensor_seg_prob_map_for_nec, labels_source_one_hot_nec = arrange_for_binary_weights(preds_source,
-    #                                                                                                       tensor_seg_prob_map,
-    #                                                                                                       labels_source_one_hot,
-    #                                                                                                       interested_region)
-    # output = get_importance_weights(preds_source_nec.numpy(), labels_source_one_hot_nec.numpy(), tensor_seg_prob_map_for_nec.numpy())  # [N,4]
-    # nec_weight = torch.tensor(output["weights"])[0] # 0:nec, 1:non-nec
-    # print("weights (nec vs non-nec): ", nec_weight, torch.tensor(output["weights"])[1])
-    # # wt
-    # preds_source_wt, tensor_seg_prob_map_for_wt, labels_source_one_hot_wt = arrange_for_binary_weights(preds_source,
-    #                                                                                                       tensor_seg_prob_map,
-    #                                                                                                       labels_source_one_hot,
-    #                                                                                                       (1,2,3))
-    # output = get_importance_weights(preds_source_wt.numpy(), labels_source_one_hot_wt.numpy(),
-    #                                 tensor_seg_prob_map_for_wt.numpy())  # [N,4]
-    # wt_weight = torch.tensor(output["weights"])[0]  # 0:nec, 1:non-nec
-    # print("weights (wt vs non-wt): ", wt_weight, torch.tensor(output["weights"])[1])
-
-    device = 'cuda'
-    nec_ece_true = estimator(preds_target=tensor_nec_prob_map.reshape(-1).to(device),
-                             preds_source=nec_prob_map_source.reshape(-1).to(device),
-                             labels_source=nec_gt_map_source.reshape(-1).to(device), weights=nec_weight_true.to(device))
-    wt_ece_true = estimator(preds_target=tensor_wt_prob_map.reshape(-1).to(device),
-                            preds_source=wt_prob_map_source.reshape(-1).to(device),
-                            labels_source=wt_gt_map_source.reshape(-1).to(device), weights=wt_weight_true.to(device))
-    # nec_ece_est = estimator(preds_target=tensor_nec_prob_map.reshape(-1).to(device),
-    #                         preds_source=nec_prob_map_source.reshape(-1).to(device),
-    #                         labels_source=nec_gt_map_source.reshape(-1).to(device), weights=nec_weight.to(device))
-    # wt_ece_est = estimator(preds_target=tensor_wt_prob_map.reshape(-1).to(device),
-    #                        preds_source=wt_prob_map_source.reshape(-1).to(device),
-    #                        labels_source=wt_gt_map_source.reshape(-1).to(device), weights=wt_weight.to(device))
-    print("necrosis:", nec_ece_true)
-    print("WT:", wt_ece_true)
-
-    device = 'cuda'
-    nec_ece = estimator(
-        preds_target=tensor_nec_prob_map.reshape(-1).to(device),
-        preds_source=nec_prob_map_source.reshape(-1).to(device),
-        labels_source=nec_gt_map_source.reshape(-1).to(device),
-        weights=nec_weight.to(device)  # for necrosis
-    )
-    wt_ece = estimator(
-        preds_target=tensor_wt_prob_map.reshape(-1).to(device),
-        preds_source=wt_prob_map_source.reshape(-1).to(device),
-        labels_source=wt_gt_map_source.reshape(-1).to(device),
-        weights=wt_weight.to(device)  # for wt
-    )
-    return nec_ece, wt_ece
